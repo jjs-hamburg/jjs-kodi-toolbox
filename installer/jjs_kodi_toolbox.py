@@ -58,7 +58,7 @@ except ImportError:
 
 
 APP_TITLE = "JJS KODI Toolbox"
-APP_VERSION = "1.25"
+APP_VERSION = "1.26"
 META_NAME = "JJS_PROFILE_TRANSFER.json"
 
 DEFAULT_ADB_PORT = 5555
@@ -2060,7 +2060,7 @@ class TransferApp(tk.Tk):
                 work_w, work_h = working.size
 
                 def edge_band(values: list[float], from_end: bool, max_width: int) -> int:
-                    threshold = 1.25
+                    threshold = 1.26
                     sequence = list(reversed(values)) if from_end else values
                     count = 0
                     for value in sequence:

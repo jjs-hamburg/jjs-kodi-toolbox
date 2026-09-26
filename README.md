@@ -2,7 +2,7 @@
 
 Windows toolbox for managing Kodi on **Android / NVIDIA Shield (ADB)** and **LibreELEC (SSH)**.
 
-Current version: **1.25**
+Current version: **1.26**
 
 ## What it does
 
@@ -67,7 +67,7 @@ Current version: **1.25**
 
 Get the current Windows build from:
 
-**Releases → JJS KODI Toolbox 1.25**
+**Releases → JJS KODI Toolbox 1.26**
 
 Files:
 
