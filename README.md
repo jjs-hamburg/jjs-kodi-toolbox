@@ -76,6 +76,8 @@ Files:
 
 The Windows EXE is built automatically with GitHub Actions and PyInstaller.
 
+**Windows SmartScreen:** When you first run the EXE, Windows may display a blue “Windows protected your PC” warning because the application is unsigned. As a privately maintained, non-commercial project, JJS KODI Toolbox is distributed without a paid code-signing certificate to avoid the recurring cost.
+
 ## Local data
 
 Stored under:
