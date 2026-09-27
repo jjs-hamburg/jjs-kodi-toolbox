@@ -58,7 +58,7 @@ except ImportError:
 
 
 APP_TITLE = "JJS KODI Toolbox"
-APP_VERSION = "1.26"
+APP_VERSION = "1.27"
 META_NAME = "JJS_PROFILE_TRANSFER.json"
 
 DEFAULT_ADB_PORT = 5555
@@ -95,7 +95,8 @@ def config_path() -> Path:
 
 
 def known_hosts_path() -> Path:
-    path = app_root() / "known_hosts"
+    path = Path.home() / ".ssh" / "known_hosts"
+    path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
         path.touch()
     return path
@@ -1957,8 +1958,7 @@ class TransferApp(tk.Tk):
             raise TransferError("SSH password is required.")
 
         client = paramiko.SSHClient()
-        # Authentication uses username/password only. The server host key is stored locally in known_hosts.
-        client.load_system_host_keys()
+        # Authentication uses username/password only. Host keys use the standard OpenSSH known_hosts file.
         try:
             client.load_host_keys(str(known_hosts_path()))
         except Exception:

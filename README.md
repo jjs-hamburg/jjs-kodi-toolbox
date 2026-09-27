@@ -2,7 +2,7 @@
 
 Windows toolbox for managing Kodi on **Android / NVIDIA Shield (ADB)** and **LibreELEC (SSH)**.
 
-Current version: **1.26**
+Current version: **1.27**
 
 ## What it does
 
@@ -67,7 +67,7 @@ Current version: **1.26**
 
 Get the current Windows build from:
 
-**Releases → JJS KODI Toolbox 1.26**
+**Releases → JJS KODI Toolbox 1.27**
 
 Files:
 
@@ -84,7 +84,11 @@ Stored under:
 
 `%LOCALAPPDATA%\JJSKodiToolbox\`
 
-Contains configuration, SSH host keys and logs. SSH passwords are never stored.
+Contains configuration and logs. SSH passwords are never stored.
+
+LibreELEC SSH host keys use the standard OpenSSH file:
+
+`%USERPROFILE%\.ssh\known_hosts`
 
 ## Important
 
