@@ -58,7 +58,7 @@ except ImportError:
 
 
 APP_TITLE = "JJS KODI Toolbox"
-APP_VERSION = "1.27"
+APP_VERSION = "1.28"
 META_NAME = "JJS_PROFILE_TRANSFER.json"
 
 DEFAULT_ADB_PORT = 5555
@@ -4191,13 +4191,30 @@ class TransferApp(tk.Tk):
     def _compatibility_mode(self, meta: dict | None, target: dict) -> tuple[bool, str]:
         if not meta or meta.get("format") != "JJS-Kodi-Profile-Transfer":
             return False, "backup without platform metadata"
+
         source = meta.get("source", {})
-        same_platform = source.get("platform") == target["platform"]
+        source_platform = source.get("platform")
+        target_platform = target["platform"]
+        source_arch = source.get("arch", "?")
+        target_arch = target.get("arch", "?")
+        source_arch_family = source.get("arch_family") or arch_family(source_arch)
+        target_arch_family = target.get("arch_family") or arch_family(target_arch)
+
+        same_platform = source_platform == target_platform
+        same_architecture = source_arch_family == target_arch_family
+
+        if same_platform and same_architecture:
+            return True, "same platform/architecture - full restore"
+
         if same_platform:
-            return True, "same platform - full restore"
+            return False, (
+                f"cross-architecture: {source_platform}/{source_arch} "
+                f"→ {target_platform}/{target_arch}"
+            )
+
         return False, (
-            f"cross-platform: {source.get('platform', '?')}/{source.get('arch', '?')} "
-            f"→ {target['platform']}/{target['arch']}"
+            f"cross-platform: {source_platform or '?'}/{source_arch} "
+            f"→ {target_platform}/{target_arch}"
         )
 
     def _member_allowed(
