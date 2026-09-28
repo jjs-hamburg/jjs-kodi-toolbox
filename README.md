@@ -2,7 +2,7 @@
 
 Windows toolbox for managing Kodi on **Android / NVIDIA Shield (ADB)** and **LibreELEC (SSH)**.
 
-Current version: **1.27**
+Current version: **1.28**
 
 ## What it does
 
@@ -14,7 +14,7 @@ Current version: **1.27**
   - Restore a backup to another Kodi installation
   - Direct transfer from Source A to Target B
   - Same-platform restore: complete profile
-  - Cross-platform restore: keeps the target `Addons*.db`, restores portable add-ons/settings, skips platform-dependent binary add-ons
+  - Cross-platform or cross-architecture restore: keeps the target `Addons*.db`, restores portable add-ons/settings, skips platform-/architecture-dependent binary add-ons
 
 - **Install / update Kodi**
   - Android: install or update a local APK with `adb install -r`
@@ -67,7 +67,7 @@ Current version: **1.27**
 
 Get the current Windows build from:
 
-**Releases → JJS KODI Toolbox 1.27**
+**Releases → JJS KODI Toolbox 1.28**
 
 Files:
 
