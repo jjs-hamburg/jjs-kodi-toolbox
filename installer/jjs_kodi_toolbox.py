@@ -5043,12 +5043,18 @@ class TransferApp(tk.Tk):
 
                 meta = None
                 try:
-                    member = tf.getmember(META_NAME)
-                    f = tf.extractfile(member)
-                    if f is not None:
-                        meta = json.loads(f.read().decode("utf-8"))
-                except KeyError:
-                    pass
+                    member = next(
+                        (
+                            item
+                            for item in members
+                            if normalize_tar_name(item.name, legacy_wrapped) == META_NAME
+                        ),
+                        None,
+                    )
+                    if member is not None:
+                        f = tf.extractfile(member)
+                        if f is not None:
+                            meta = json.loads(f.read().decode("utf-8"))
                 except Exception as e:
                     raise TransferError(f"Backup metadata is invalid: {e}") from e
         except TransferError:
