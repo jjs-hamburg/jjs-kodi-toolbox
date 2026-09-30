@@ -5448,12 +5448,14 @@ class TransferApp(tk.Tk):
                     transferred_bytes = 0
                     remote_root = destination_root.rstrip("/") + "/"
                     for child in children:
+                        mib_done = transferred_bytes / (1024 * 1024)
+                        mib_total = total_bytes / (1024 * 1024)
                         self._set_progress_fraction(
                             progress_start,
                             progress_end,
                             transferred_bytes,
                             total_bytes,
-                            f"Transferring {child.name}",
+                            f"Transferring {child.name} – {mib_done:,.1f} / {mib_total:,.1f} MiB",
                         )
                         cp = self._run(
                             [str(adb), "-s", target["serial"], "push", str(child), remote_root],
@@ -5466,12 +5468,14 @@ class TransferApp(tk.Tk):
                                 + (f" Device: {detail}" if detail else "")
                             )
                         transferred_bytes += child_sizes[child]
+                        mib_done = transferred_bytes / (1024 * 1024)
+                        mib_total = total_bytes / (1024 * 1024)
                         self._set_progress_fraction(
                             progress_start,
                             progress_end,
                             transferred_bytes,
                             total_bytes,
-                            "Transferring profile",
+                            f"Transferring profile – {mib_done:,.1f} / {mib_total:,.1f} MiB",
                         )
 
                     for link_type, name, link_target in links:
@@ -5519,12 +5523,14 @@ class TransferApp(tk.Tk):
                             break
                         stdin.write(chunk)
                         transferred_bytes += len(chunk)
+                        mib_done = transferred_bytes / (1024 * 1024)
+                        mib_total = total_bytes / (1024 * 1024)
                         self._set_progress_fraction(
                             progress_start,
                             progress_end,
                             transferred_bytes,
                             total_bytes,
-                            "Transferring restore",
+                            f"Transferring restore – {mib_done:,.1f} / {mib_total:,.1f} MiB",
                         )
             except Exception as e:
                 stream_error = e
