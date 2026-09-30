@@ -5599,12 +5599,21 @@ class TransferApp(tk.Tk):
 
     # ---------- workflows ----------
     def _selective_backup_only(self) -> None:
-        components = self._choose_profile_components("Selective profile backup")
-        if not components:
-            raise TransferError("Selective backup was cancelled.")
+        components = self._require_selected_profile_components()
         self._set_progress(5, "Checking source")
         self._set_status("result", "Selective backup in progress …")
         source = self._inspect_endpoint("source")
+
+        existing_paths = self._existing_profile_component_paths(
+            source, "source", components
+        )
+        available = self._components_for_existing_paths(components, existing_paths)
+        components = self._confirm_missing_components(
+            components,
+            available,
+            "on Source A",
+        )
+
         path, _ = self._create_selective_backup(
             source,
             "source",
@@ -5627,17 +5636,19 @@ class TransferApp(tk.Tk):
         )
 
     def _selective_restore_only(self) -> None:
+        components = self._require_selected_profile_components()
         self._set_progress(5, "Checking target")
         self._set_status("result", "Selective restore in progress …")
         backup = Path(self.backup_file_var.get().strip())
         target = self._inspect_endpoint("target")
-        self._set_progress(12, "Preparing selective backup")
+        self._set_progress(12, "Preparing backup")
         local_backup, temp_copy = self._localize_restore_source(backup)
         try:
             safety = self._restore_selective_backup(
                 local_backup,
                 target,
                 "target",
+                components,
                 confirm=True,
                 display_backup=backup,
                 progress_range=(15, 96),
@@ -5655,17 +5666,36 @@ class TransferApp(tk.Tk):
         self._ui_queue.put(("message", ("info", APP_TITLE, msg)))
 
     def _selective_transfer(self) -> None:
-        components = self._choose_profile_components("Selective profile transfer A → B")
-        if not components:
-            raise TransferError("Selective transfer was cancelled.")
+        components = self._require_selected_profile_components()
 
         self._set_progress(4, "Checking source")
         self._set_status("result", "Selective transfer A → B in progress …")
         source = self._inspect_endpoint("source")
+
+        existing_paths = self._existing_profile_component_paths(
+            source, "source", components
+        )
+        available = self._components_for_existing_paths(components, existing_paths)
+        components = self._confirm_missing_components(
+            components,
+            available,
+            "on Source A",
+        )
+
         self._set_progress(8, "Checking target")
         target = self._inspect_endpoint("target")
         if self._same_endpoint(source, target):
             raise TransferError("Source and target are the same Kodi installation.")
+
+        source_meta = {
+            "format": "JJS-Kodi-Profile-Transfer",
+            "source": {
+                "platform": source["platform"],
+                "arch": source["arch"],
+                "arch_family": source["arch_family"],
+            },
+        }
+        self._confirm_selective_compatibility(source_meta, target, components)
 
         summary = self._profile_component_summary(components)
         if not self._ask_yes_no(
@@ -5674,7 +5704,7 @@ class TransferApp(tk.Tk):
             f"Target:\n{target['ip']} – {target['name']} ({target['identifier']})\n\n"
             f"Transfer only:\n{summary}\n\nContinue?",
         ):
-            raise TransferError("Selective transfer was cancelled.")
+            raise TransferError("Selective transfer was cancelled before any target changes were made.")
 
         backup, _ = self._create_selective_backup(
             source,
@@ -5690,6 +5720,7 @@ class TransferApp(tk.Tk):
                 local_backup,
                 target,
                 "target",
+                components,
                 confirm=False,
                 display_backup=backup,
                 progress_range=(42, 96),
@@ -5713,13 +5744,22 @@ class TransferApp(tk.Tk):
         self._ui_queue.put(("message", ("info", APP_TITLE, msg)))
 
     def _delete_profile_content(self) -> None:
-        components = self._choose_profile_components("Delete profile content")
-        if not components:
-            raise TransferError("Delete operation was cancelled.")
+        components = self._require_selected_profile_components()
 
         self._set_progress(5, "Checking target")
         self._set_status("result", "Deleting selected profile content …")
         target = self._inspect_endpoint("target")
+
+        existing_paths = self._existing_profile_component_paths(
+            target, "target", components
+        )
+        available = self._components_for_existing_paths(components, existing_paths)
+        components = self._confirm_missing_components(
+            components,
+            available,
+            "on Target B",
+        )
+
         summary = self._profile_component_summary(components)
         if not self._ask_yes_no(
             "Delete profile content",
@@ -5727,7 +5767,7 @@ class TransferApp(tk.Tk):
             f"Delete:\n{summary}\n\n"
             "Only the selected content will be removed. This operation is destructive. Continue?",
         ):
-            raise TransferError("Delete operation was cancelled.")
+            raise TransferError("Delete operation was cancelled before any target changes were made.")
 
         was_running = self._is_kodi_running(target, "target")
         safety_path: Path | None = None
