@@ -18,6 +18,7 @@ import base64
 import copy
 import ctypes
 import datetime as dt
+import fnmatch
 import hashlib
 import io
 import ipaddress
@@ -58,7 +59,7 @@ except ImportError:
 
 
 APP_TITLE = "JJS KODI Toolbox"
-APP_VERSION = "1.28"
+APP_VERSION = "1.29"
 META_NAME = "JJS_PROFILE_TRANSFER.json"
 
 DEFAULT_ADB_PORT = 5555
@@ -77,6 +78,43 @@ KNOWN_ANDROID_LABELS = {
     "org.jjs.kodi": "Kodi JJS",
 }
 NATIVE_EXTENSIONS = {".so", ".dll", ".dylib", ".pyd"}
+
+PROFILE_COMPONENTS = {
+    "settings": (
+        "Settings",
+        (
+            "userdata/advancedsettings.xml",
+            "userdata/guisettings.xml",
+            "userdata/sources.xml",
+            "userdata/mediasources.xml",
+            "userdata/passwords.xml",
+            "userdata/playercorefactory.xml",
+            "userdata/favourites.xml",
+            "userdata/RssFeeds.xml",
+            "userdata/LCD.xml",
+            "userdata/peripheral_data",
+        ),
+    ),
+    "profiles": (
+        "Kodi user profiles",
+        (
+            "userdata/profiles",
+            "userdata/profiles.xml",
+        ),
+    ),
+    "addons": ("Add-ons", ("addons",)),
+    "addon_data": ("Add-on settings", ("userdata/addon_data",)),
+    "music_db": ("Music DB (SQLite)", ("userdata/Database/MyMusic*.db",)),
+    "video_db": ("Video DB (SQLite)", ("userdata/Database/MyVideos*.db",)),
+    "textures_db": ("Textures cache DB", ("userdata/Database/Textures*.db",)),
+    "addons_db": ("Add-ons DB", ("userdata/Database/Addons*.db",)),
+    "thumbnails": ("Thumbnail files", ("userdata/Thumbnails",)),
+    "keymaps": ("Keymaps", ("userdata/keymaps",)),
+    "playlists": ("Playlists", ("userdata/playlists",)),
+    "library_nodes": ("Library nodes", ("userdata/library",)),
+    "media": ("Media / backgrounds", ("media", "userdata/backgrounds")),
+}
+
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
@@ -298,6 +336,9 @@ class TransferApp(tk.Tk):
             "backup_dir": self.backup_dir_var.get().strip(),
             "backup_file": self.backup_file_var.get().strip(),
             "safety_backup": bool(self.safety_backup_var.get()),
+            "selective_components": self._selected_profile_components()
+            if hasattr(self, "_selective_component_vars")
+            else [],
             "screenshot_dir": self.screenshot_dir_var.get().strip(),
             "database_backup_dir": self.database_backup_dir_var.get().strip(),
             "database_restore_file": self.database_restore_file_var.get().strip(),
@@ -341,6 +382,17 @@ class TransferApp(tk.Tk):
         self.backup_dir_var = tk.StringVar(value=str(self._cfg.get("backup_dir", default_backup_dir())))
         self.backup_file_var = tk.StringVar(value=str(self._cfg.get("backup_file", "")))
         self.safety_backup_var = tk.BooleanVar(value=bool(self._cfg.get("safety_backup", True)))
+        saved_selective = self._cfg.get("selective_components", [])
+        if not isinstance(saved_selective, list):
+            saved_selective = []
+        if "databases" in saved_selective:
+            saved_selective = [
+                key for key in saved_selective if key != "databases"
+            ] + ["music_db", "video_db", "textures_db", "addons_db"]
+        self._selective_component_vars = {
+            key: tk.BooleanVar(value=key in saved_selective)
+            for key in PROFILE_COMPONENTS
+        }
         self.screenshot_dir_var = tk.StringVar(
             value=str(self._cfg.get("screenshot_dir", default_screenshot_dir()))
         )
@@ -402,67 +454,143 @@ class TransferApp(tk.Tk):
         self._build_database_tab(database_tab)
 
     def _build_profile_tab(self, outer) -> None:
-        endpoints = ttk.Frame(outer)
-        endpoints.pack(fill="x")
-        endpoints.columnconfigure(0, weight=1)
-        endpoints.columnconfigure(1, weight=1)
+        self.status_vars: dict[str, tk.StringVar] = {
+            key: tk.StringVar(value="—")
+            for key in ("source", "target", "backup", "restore", "result")
+        }
 
-        self._build_endpoint(endpoints, "source", "Source A", 0)
-        self._build_endpoint(endpoints, "target", "Target B", 1)
+        canvas = tk.Canvas(outer, highlightthickness=0, borderwidth=0)
+        tab_scroll = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=tab_scroll.set)
+        tab_scroll.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
 
-        options = ttk.LabelFrame(outer, text="Backup", padding=10)
-        options.pack(fill="x", pady=(10, 0))
-        options.columnconfigure(1, weight=1)
+        content = ttk.Frame(canvas)
+        content_window = canvas.create_window((0, 0), window=content, anchor="nw")
 
-        self._path_row(options, 0, "ADB folder:", self.adb_dir_var, self._browse_adb_dir)
-        self._path_row(options, 1, "Backup destination:", self.backup_dir_var, self._browse_backup_dir)
-        self._path_row(options, 2, "Backup to restore:", self.backup_file_var, self._browse_backup_file)
+        def update_scroll_region(_event=None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def fit_content_width(event) -> None:
+            canvas.itemconfigure(content_window, width=event.width)
+
+        content.bind("<Configure>", update_scroll_region)
+        canvas.bind("<Configure>", fit_content_width)
+
+        endpoints_box = ttk.LabelFrame(content, text="Source / Target", padding=10)
+        endpoints_box.pack(fill="x")
+        endpoints_box.columnconfigure(0, weight=1, uniform="profile_endpoint")
+        endpoints_box.columnconfigure(1, weight=1, uniform="profile_endpoint")
+        self._build_endpoint(endpoints_box, "source", "Source A", 0)
+        self._build_endpoint(endpoints_box, "target", "Target B", 1)
+
+        backup_box = ttk.LabelFrame(content, text="Backup", padding=10)
+        backup_box.pack(fill="x", pady=(10, 0))
+        backup_box.columnconfigure(1, weight=1)
+        self._path_row(backup_box, 0, "ADB folder:", self.adb_dir_var, self._browse_adb_dir)
+        self._path_row(
+            backup_box, 1, "Backup destination:", self.backup_dir_var, self._browse_backup_dir
+        )
+        self._path_row(
+            backup_box, 2, "Backup to restore:", self.backup_file_var, self._browse_backup_file
+        )
         ttk.Checkbutton(
-            options,
+            backup_box,
             text="Automatically back up the existing target profile before restore",
             variable=self.safety_backup_var,
         ).grid(row=3, column=1, sticky="w", pady=(5, 0))
 
-        actions = ttk.Frame(outer)
-        actions.pack(fill="x", pady=10)
-
+        full_box = ttk.LabelFrame(content, text="Full Profiles", padding=10)
+        full_box.pack(fill="x", pady=(10, 0))
+        full_actions = ttk.Frame(full_box)
+        full_actions.pack(fill="x")
         for text, fn in (
-            ("Check source", lambda: self._start_worker(lambda: self._check_endpoint("source"), operation_title="Check source")),
-            ("Check target", lambda: self._start_worker(lambda: self._check_endpoint("target"), operation_title="Check target")),
             ("BACKUP", lambda: self._start_worker(self._backup_only, operation_title="Profile backup")),
             ("RESTORE", lambda: self._start_worker(self._restore_only, operation_title="Profile restore")),
             ("TRANSFER A → B", lambda: self._start_worker(self._transfer, operation_title="Profile transfer A → B")),
         ):
-            b = ttk.Button(actions, text=text, command=fn)
+            b = ttk.Button(full_actions, text=text, command=fn)
             b.pack(side="left", padx=(0, 8))
             self._action_buttons.append(b)
 
-        status = ttk.LabelFrame(outer, text="Status", padding=8)
-        status.pack(fill="x", pady=(0, 10))
-        status.columnconfigure(1, weight=1)
-        self.status_vars: dict[str, tk.StringVar] = {}
-        for row, (key, label) in enumerate(
-            (
-                ("source", "Source"),
-                ("target", "Target"),
-                ("backup", "Backup"),
-                ("restore", "Restore"),
-                ("result", "Result"),
-            )
-        ):
-            ttk.Label(status, text=label + ":").grid(row=row, column=0, sticky="nw", padx=(0, 10), pady=2)
-            var = tk.StringVar(value="—")
-            self.status_vars[key] = var
-            ttk.Label(status, textvariable=var).grid(row=row, column=1, sticky="w", pady=2)
+        selective_box = ttk.LabelFrame(content, text="Selective Profiles", padding=10)
+        selective_box.pack(fill="x", pady=(10, 0))
+        ttk.Label(
+            selective_box,
+            text="The same selection is used for backup, restore, transfer and delete.",
+        ).grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 6))
 
-        log_box = ttk.LabelFrame(outer, text="Log", padding=6)
-        log_box.pack(fill="both", expand=True)
-        self.log_text = tk.Text(log_box, wrap="word", height=14, font=("Consolas", 9), state="disabled")
+        component_columns = 5
+        component_rows = (len(PROFILE_COMPONENTS) + component_columns - 1) // component_columns
+        for index, (key, (label, _paths)) in enumerate(PROFILE_COMPONENTS.items()):
+            row = 1 + index // component_columns
+            column = index % component_columns
+            ttk.Checkbutton(
+                selective_box,
+                text=label,
+                variable=self._selective_component_vars[key],
+                command=self._save_config,
+            ).grid(row=row, column=column, sticky="w", padx=(0, 14), pady=2)
+
+        actions_row = 1 + component_rows
+        selective_actions = ttk.Frame(selective_box)
+        selective_actions.grid(
+            row=actions_row,
+            column=0,
+            columnspan=component_columns,
+            sticky="w",
+            pady=(10, 0),
+        )
+        for text, fn in (
+            ("BACKUP", lambda: self._start_worker(self._selective_backup_only, operation_title="Selective profile backup")),
+            ("RESTORE", lambda: self._start_worker(self._selective_restore_only, operation_title="Selective profile restore")),
+            ("TRANSFER A → B", lambda: self._start_worker(self._selective_transfer, operation_title="Selective profile transfer A → B")),
+            ("DELETE TARGET CONTENT", lambda: self._start_worker(self._delete_profile_content, operation_title="Delete target content")),
+        ):
+            b = ttk.Button(selective_actions, text=text, command=fn)
+            b.pack(side="left", padx=(0, 8))
+            self._action_buttons.append(b)
+
+        result_row = ttk.Frame(selective_box)
+        result_row.grid(
+            row=actions_row + 1,
+            column=0,
+            columnspan=component_columns,
+            sticky="ew",
+            pady=(8, 0),
+        )
+        ttk.Label(result_row, text="Result:").pack(side="left")
+        ttk.Label(result_row, textvariable=self.status_vars["result"]).pack(
+            side="left", padx=(8, 0)
+        )
+
+        log_box = ttk.LabelFrame(content, text="Log", padding=6)
+        log_box.pack(fill="both", expand=True, pady=(10, 0))
+        self.log_text = tk.Text(
+            log_box, wrap="word", height=10, font=("Consolas", 9), state="disabled"
+        )
         scroll = ttk.Scrollbar(log_box, orient="vertical", command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=scroll.set)
         self.log_text.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
         self._log_widgets.append(self.log_text)
+
+        def bind_profile_mousewheel(widget) -> None:
+            if isinstance(widget, tk.Text):
+                return
+            widget.bind(
+                "<MouseWheel>",
+                lambda event: canvas.yview_scroll(
+                    -1 if event.delta > 0 else 1,
+                    "units",
+                ),
+                add="+",
+            )
+            for child in widget.winfo_children():
+                bind_profile_mousewheel(child)
+
+        bind_profile_mousewheel(content)
+        update_scroll_region()
 
     def _build_install_tab(self, outer) -> None:
         connection = ttk.LabelFrame(outer, text="Target device", padding=10)
@@ -1144,6 +1272,23 @@ class TransferApp(tk.Tk):
         profile_box = ttk.Combobox(frame, textvariable=profile_var)
         profile_box.grid(row=4, column=1, sticky="ew", pady=3)
 
+        check_row = ttk.Frame(frame)
+        check_row.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(7, 0))
+        check_button = ttk.Button(
+            check_row,
+            text="Check source" if role == "source" else "Check target",
+            command=lambda r=role: self._start_worker(
+                lambda: self._check_endpoint(r),
+                operation_title="Check source" if r == "source" else "Check target",
+            ),
+        )
+        check_button.pack(side="left")
+        self._action_buttons.append(check_button)
+        ttk.Label(
+            check_row,
+            textvariable=self.status_vars[role],
+        ).pack(side="left", padx=(10, 0))
+
         self._endpoint_widgets[role] = {
             "user": user_entry,
             "password": pass_entry,
@@ -1292,6 +1437,17 @@ class TransferApp(tk.Tk):
                 elif kind == "status":
                     key, text = payload
                     self.status_vars[key].set(text)
+                elif kind == "backup_file":
+                    self.backup_file_var.set(str(payload))
+                    self._save_config()
+                elif kind == "database_restore_file":
+                    self.database_restore_file_var.set(str(payload))
+                elif kind == "install_profile_value":
+                    value, done = payload
+                    try:
+                        self._endpoint_vars["install"]["profile"].set(str(value))
+                    finally:
+                        done.set()
                 elif kind == "busy":
                     self._apply_busy(bool(payload))
                 elif kind == "progress":
@@ -1745,6 +1901,21 @@ class TransferApp(tk.Tk):
         self.after(0, show)
         done.wait()
         return answer["value"]
+
+    def _selected_profile_components(self) -> list[str]:
+        return [
+            key
+            for key, var in self._selective_component_vars.items()
+            if bool(var.get())
+        ]
+
+    def _require_selected_profile_components(self) -> list[str]:
+        components = self._selected_profile_components()
+        if not components:
+            raise TransferError(
+                "Select at least one profile component in Selective Profiles."
+            )
+        return components
 
     # ---------- subprocess / ADB ----------
     def _run(
@@ -2601,7 +2772,7 @@ class TransferApp(tk.Tk):
                 if stopped:
                     self._database_start_kodi(info)
 
-        self.database_restore_file_var.set(str(result["path"]))
+        self._ui_queue.put(("database_restore_file", str(result["path"])))
         self._set_status(
             "database",
             f"Backup complete: {result['engine']} | {result['database']} | schema {result['schema_version']}",
@@ -3298,7 +3469,9 @@ class TransferApp(tk.Tk):
         selected_text = str(self._endpoint_vars["install"]["profile"].get()).strip()
         info = self._inspect_install_device()
         if selected_text:
-            self._endpoint_vars["install"]["profile"].set(selected_text)
+            done = threading.Event()
+            self._ui_queue.put(("install_profile_value", (selected_text, done)))
+            done.wait()
         profile = self._selected_install_profile()
 
         backup_requested = bool(self.uninstall_backup_var.get())
@@ -3956,6 +4129,603 @@ class TransferApp(tk.Tk):
         finally:
             client.close()
 
+    # ---------- selective profile content ----------
+    def _profile_component_paths(self, components: list[str]) -> list[str]:
+        paths: list[str] = []
+        seen: set[str] = set()
+        for key in components:
+            if key not in PROFILE_COMPONENTS:
+                raise TransferError(f"Unknown profile component: {key}")
+            for path in PROFILE_COMPONENTS[key][1]:
+                if path not in seen:
+                    seen.add(path)
+                    paths.append(path)
+        return paths
+
+    def _profile_component_summary(self, components: list[str]) -> str:
+        return ", ".join(PROFILE_COMPONENTS[key][0] for key in components)
+
+    def _profile_path_matches(self, name: str, pattern: str) -> bool:
+        if any(ch in pattern for ch in "*?["):
+            return fnmatch.fnmatchcase(name, pattern)
+        return name == pattern or name.startswith(pattern + "/")
+
+    def _shell_profile_pattern(self, root: str, pattern: str) -> str:
+        if not any(ch in pattern for ch in "*?["):
+            return shlex.quote(root.rstrip("/") + "/" + pattern)
+        directory, _, basename = pattern.rpartition("/")
+        prefix = root.rstrip("/") + ("/" + directory if directory else "")
+        return shlex.quote(prefix + "/") + basename
+
+    def _components_for_existing_paths(
+        self,
+        components: list[str],
+        existing_paths: list[str],
+    ) -> list[str]:
+        available: list[str] = []
+        for key in components:
+            if any(
+                self._profile_path_matches(path, pattern)
+                for path in existing_paths
+                for pattern in PROFILE_COMPONENTS[key][1]
+            ):
+                available.append(key)
+        return available
+
+    def _confirm_missing_components(
+        self,
+        selected: list[str],
+        available: list[str],
+        location: str,
+    ) -> list[str]:
+        missing = [key for key in selected if key not in available]
+        effective = [key for key in selected if key in available]
+        if not missing:
+            return effective
+        missing_text = "\n".join(f"• {PROFILE_COMPONENTS[key][0]}" for key in missing)
+        if not effective:
+            raise TransferError(
+                f"None of the selected profile components are available {location}.\n\n"
+                f"Missing:\n{missing_text}"
+            )
+        if not self._ask_yes_no(
+            "Selected profile content is missing",
+            f"The following selected profile components are not available {location}:\n\n"
+            f"{missing_text}\n\n"
+            "Continue with the available selected components?",
+        ):
+            raise TransferError("Operation was cancelled before any target changes were made.")
+        self.log(
+            "Continuing without unavailable selected components: "
+            + self._profile_component_summary(missing)
+        )
+        return effective
+
+    def _backup_available_components(
+        self,
+        backup: Path,
+        components: list[str],
+        legacy_wrapped: bool,
+    ) -> list[str]:
+        found: set[str] = set()
+        try:
+            with tarfile.open(backup, "r:") as tf:
+                for member in tf.getmembers():
+                    name = normalize_tar_name(member.name, legacy_wrapped)
+                    if not name or name == META_NAME:
+                        continue
+                    for key in components:
+                        if key in found:
+                            continue
+                        for pattern in PROFILE_COMPONENTS[key][1]:
+                            if self._profile_path_matches(name, pattern):
+                                found.add(key)
+                                break
+        except Exception as e:
+            raise TransferError(f"Backup content could not be inspected: {e}") from e
+        return [key for key in components if key in found]
+
+    def _confirm_selective_compatibility(
+        self,
+        meta: dict | None,
+        target: dict,
+        components: list[str],
+    ) -> tuple[bool, str, list[str]]:
+        full_restore, mode = self._compatibility_mode(meta, target)
+        if full_restore:
+            return full_restore, mode, components
+
+        effective = list(components)
+        notes: list[str] = []
+        if any(key in components for key in ("addons", "addon_data")):
+            notes.append(
+                "Hardware-dependent source add-ons and their settings will be skipped; "
+                "portable add-ons can still be transferred."
+            )
+        if "addons_db" in components:
+            effective = [key for key in effective if key != "addons_db"]
+            notes.append(
+                "The Add-ons DB is target-specific and will not be transferred. "
+                "Kodi will maintain/rebuild it on the target."
+            )
+
+        if not notes:
+            return full_restore, mode, effective
+
+        if not effective:
+            raise TransferError(
+                "The selected Add-ons DB cannot be transferred across different "
+                "platforms/architectures. No other transferable component is selected."
+            )
+
+        if not self._ask_yes_no(
+            "Platform / architecture compatibility",
+            f"Source and target are not the same platform/architecture.\n\n{mode}\n\n"
+            + "\n\n".join(notes)
+            + "\n\nContinue with the transferable selected content?",
+        ):
+            raise TransferError("Operation was cancelled before any target changes were made.")
+        return full_restore, mode, effective
+
+    def _existing_profile_component_paths(
+        self,
+        info: dict,
+        role: str,
+        components: list[str],
+    ) -> list[str]:
+        paths = self._profile_component_paths(components)
+        commands = []
+        root = info["profile_root"].rstrip("/")
+        qroot_prefix = shlex.quote(root.rstrip("/") + "/")
+        for path in paths:
+            shell_path = self._shell_profile_pattern(root, path)
+            if any(ch in path for ch in "*?["):
+                commands.append(
+                    f"for f in {shell_path}; do "
+                    f"[ -e \"$f\" ] || continue; "
+                    f"printf '%s\\n' \"${{f#{root.rstrip('/')}/}}\"; "
+                    f"done"
+                )
+            else:
+                absolute = root + "/" + path
+                commands.append(
+                    f"if [ -e {shlex.quote(absolute)} ]; then "
+                    f"printf '%s\\n' {shlex.quote(path)}; fi"
+                )
+        if not commands:
+            return []
+        code, out, err = self._target_exec(info, role, "; ".join(commands), timeout=120)
+        if code != 0:
+            raise TransferError(
+                "Selected profile content could not be inspected."
+                + (f" Device: {err.strip()}" if err.strip() else "")
+            )
+        return [line.strip() for line in out.splitlines() if line.strip()]
+
+    def _selective_backup_destination(self, info: dict) -> Path:
+        root = Path(self.backup_dir_var.get().strip() or str(default_backup_dir()))
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            raise TransferError(f"Backup destination folder could not be created: {root}: {e}") from e
+
+        ip = safe_filename_part(info["ip"])
+        name = safe_filename_part(info["name"])
+        stamp = dt.datetime.now().strftime("%y%m%d-%H%M")
+        candidate = root / f"{ip}-{name}-{stamp}-selective.tar"
+        n = 2
+        while candidate.exists():
+            candidate = root / f"{ip}-{name}-{stamp}-selective-{n}.tar"
+            n += 1
+        return candidate
+
+    def _stream_android_selective_backup(
+        self,
+        info: dict,
+        paths: list[str],
+        destination: Path,
+    ) -> None:
+        adb = self._find_or_install_adb()
+        cmd = [
+            str(adb),
+            "-s",
+            info["serial"],
+            "exec-out",
+            "tar",
+            "-cf",
+            "-",
+            "-C",
+            info["profile_root"],
+            *paths,
+        ]
+        self.log("$ " + subprocess.list2cmdline(cmd))
+        with tempfile.TemporaryFile() as err, destination.open("wb") as out:
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=err,
+                    creationflags=CREATE_NO_WINDOW,
+                )
+                assert proc.stdout is not None
+                shutil.copyfileobj(proc.stdout, out, length=4 * 1024 * 1024)
+                proc.stdout.close()
+                code = proc.wait()
+            except Exception as e:
+                raise TransferError(f"Selective ADB backup stream failed: {e}") from e
+            if code != 0:
+                err.seek(0)
+                msg = err.read().decode("utf-8", errors="replace").strip()
+                raise TransferError(
+                    f"Selective TAR backup over ADB failed: {msg or 'Exit Code ' + str(code)}"
+                )
+
+    def _stream_ssh_selective_backup(
+        self,
+        info: dict,
+        role: str,
+        paths: list[str],
+        destination: Path,
+    ) -> None:
+        client = self._ssh_client(role)
+        root = shlex.quote(info["profile_root"])
+        selected = " ".join(shlex.quote(path) for path in paths)
+        try:
+            self.log(f"$ ssh: tar -cf - -C {root} {selected}")
+            _stdin, stdout, stderr = client.exec_command(
+                f"tar -cf - -C {root} {selected}"
+            )
+            with destination.open("wb") as out:
+                while True:
+                    chunk = stdout.read(4 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+            code = stdout.channel.recv_exit_status()
+            err = stderr.read().decode("utf-8", errors="replace").strip()
+            if code != 0:
+                raise TransferError(
+                    f"Selective TAR backup over SSH failed: {err or 'Exit Code ' + str(code)}"
+                )
+        finally:
+            client.close()
+
+    def _create_selective_backup(
+        self,
+        info: dict,
+        role: str,
+        components: list[str],
+        leave_stopped: bool = False,
+        progress_range: tuple[float, float] | None = None,
+    ) -> tuple[Path, bool]:
+        progress_start, progress_end = progress_range or (15.0, 92.0)
+
+        def progress(fraction: float, text: str) -> None:
+            value = progress_start + (progress_end - progress_start) * fraction
+            self._set_progress(value, text)
+
+        progress(0.02, "Checking selected content")
+        if not info["profile_exists"] and not self._profile_nonempty(info, role):
+            raise TransferError("The selected Kodi installation does not have a profile to back up yet.")
+
+        paths = self._existing_profile_component_paths(info, role, components)
+        if not paths:
+            raise TransferError("None of the selected profile content exists on this Kodi installation.")
+
+        destination = self._selective_backup_destination(info)
+        progress(0.08, "Preparing selective backup")
+        was_running = self._is_kodi_running(info, role)
+        if was_running:
+            progress(0.14, "Stopping Kodi")
+            self.log(f"Stopping {info['name']} for a consistent selective backup …")
+            self._stop_kodi(info, role)
+            time.sleep(1)
+
+        try:
+            progress(0.20, "Transferring selected content")
+            self.log(
+                "Backing up selected Kodi profile content: "
+                + self._profile_component_summary(components)
+            )
+            if info["platform"] == "android":
+                self._stream_android_selective_backup(info, paths, destination)
+            else:
+                self._stream_ssh_selective_backup(info, role, paths, destination)
+            progress(0.88, "Finalizing selective backup")
+            self._append_metadata(destination, info, components)
+        except Exception:
+            try:
+                destination.unlink(missing_ok=True)
+            except Exception:
+                pass
+            if was_running and not leave_stopped:
+                try:
+                    self._start_kodi(info, role)
+                except Exception:
+                    pass
+            raise
+
+        if was_running and not leave_stopped:
+            progress(0.94, "Starting Kodi")
+            self._start_kodi(info, role)
+
+        progress(1.0, "Selective backup complete")
+        size_mb = destination.stat().st_size / (1024 * 1024)
+        self.log(f"Selective backup complete: {destination} ({size_mb:.1f} MiB)")
+        self._set_status("backup", str(destination))
+        return destination, was_running
+
+    def _remove_profile_component_paths(
+        self,
+        info: dict,
+        role: str,
+        components: list[str],
+    ) -> None:
+        root = info["profile_root"].rstrip("/")
+        paths = [
+            self._shell_profile_pattern(root, path)
+            for path in self._profile_component_paths(components)
+        ]
+        if not paths:
+            return
+        code, _, err = self._target_exec(
+            info,
+            role,
+            "rm -rf -- " + " ".join(paths),
+            timeout=300,
+        )
+        if code != 0:
+            raise TransferError(
+                "Selected profile content could not be removed."
+                + (f" Device: {err.strip()}" if err.strip() else "")
+            )
+
+    def _remove_cross_platform_selected_content(
+        self,
+        info: dict,
+        role: str,
+        components: list[str],
+        portable_addons: list[str],
+    ) -> None:
+        ordinary = [
+            key for key in components
+            if key not in {"addons", "addon_data", "addons_db"}
+        ]
+        self._remove_profile_component_paths(info, role, ordinary)
+
+        root = info["profile_root"].rstrip("/")
+        if "addons" in components or "addon_data" in components:
+            for start in range(0, len(portable_addons), 40):
+                chunk = portable_addons[start : start + 40]
+                paths: list[str] = []
+                for addon_id in chunk:
+                    if "addons" in components:
+                        paths.append(root + "/addons/" + addon_id)
+                    if "addon_data" in components:
+                        paths.append(root + "/userdata/addon_data/" + addon_id)
+                if paths:
+                    code, _, err = self._target_exec(
+                        info,
+                        role,
+                        "rm -rf " + " ".join(shlex.quote(path) for path in paths),
+                        timeout=180,
+                    )
+                    if code != 0:
+                        raise TransferError(
+                            "Portable target add-ons could not be prepared for selective restore."
+                            + (f" Device: {err.strip()}" if err.strip() else "")
+                        )
+
+        # Add-ons DB is intentionally kept untouched on cross-platform restores.
+
+    def _build_component_archive(
+        self,
+        backup: Path,
+        components: list[str],
+        legacy_wrapped: bool,
+    ) -> Path | None:
+        prefixes = self._profile_component_paths(components)
+        fd, tmp_name = tempfile.mkstemp(prefix="jjs-kodi-components-", suffix=".tar")
+        os.close(fd)
+        temp_path = Path(tmp_name)
+        count = 0
+        try:
+            with tarfile.open(backup, "r:") as src, tarfile.open(temp_path, "w:") as dst:
+                for member in src.getmembers():
+                    name = normalize_tar_name(member.name, legacy_wrapped)
+                    if not name or name == META_NAME:
+                        continue
+                    if not any(self._profile_path_matches(name, pattern) for pattern in prefixes):
+                        continue
+                    ti = copy.copy(member)
+                    ti.name = name
+                    fileobj = src.extractfile(member) if member.isfile() else None
+                    dst.addfile(ti, fileobj)
+                    count += 1
+            if count == 0:
+                temp_path.unlink(missing_ok=True)
+                return None
+            return temp_path
+        except Exception:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            raise
+
+    def _restore_selective_backup(
+        self,
+        backup: Path,
+        target: dict,
+        role: str,
+        components: list[str],
+        confirm: bool = True,
+        display_backup: Path | None = None,
+        progress_range: tuple[float, float] | None = None,
+    ) -> Path | None:
+        progress_start, progress_end = progress_range or (15.0, 94.0)
+
+        def progress(fraction: float, text: str) -> None:
+            value = progress_start + (progress_end - progress_start) * fraction
+            self._set_progress(value, text)
+
+        def progress_value(fraction: float) -> float:
+            return progress_start + (progress_end - progress_start) * fraction
+
+        progress(0.02, "Reading backup")
+        shown_backup = display_backup or backup
+        meta, legacy_wrapped = self._read_backup(backup)
+
+        available = self._backup_available_components(backup, components, legacy_wrapped)
+        components = self._confirm_missing_components(
+            components,
+            available,
+            "in the selected backup",
+        )
+        full_restore, mode, components = self._confirm_selective_compatibility(
+            meta,
+            target,
+            components,
+        )
+        self.log(f"Selective restore mode: {mode}.")
+        summary = self._profile_component_summary(components)
+
+        if confirm and not self._ask_yes_no(
+            "Confirm selective restore",
+            f"Target:\n{target['ip']} – {target['name']}\n\n"
+            f"Backup:\n{shown_backup}\n\n"
+            f"Replace only these profile components:\n{summary}\n\n"
+            "All other target profile content will be kept. Continue?",
+        ):
+            raise TransferError("Selective restore was cancelled.")
+
+        progress(0.08, "Preparing target")
+        self._ensure_target_profile(target, role)
+        was_running = self._is_kodi_running(target, role)
+        safety_path: Path | None = None
+        prepared_archive: Path | None = None
+        prepared_is_temp = False
+        details = {"binary_addons": [], "portable_addons": [], "reasons": {}}
+
+        try:
+            if self.safety_backup_var.get() and self._profile_nonempty(target, role):
+                self.log("Creating a safety backup of the existing target profile …")
+                safety_path, safety_was_running = self._create_backup(
+                    target,
+                    role,
+                    leave_stopped=True,
+                    progress_range=(progress_value(0.10), progress_value(0.32)),
+                )
+                was_running = was_running or safety_was_running
+            elif was_running:
+                self._stop_kodi(target, role)
+                time.sleep(1)
+
+            progress(0.35, "Preparing selected content")
+            component_archive = self._build_component_archive(
+                backup,
+                components,
+                legacy_wrapped,
+            )
+            if component_archive is None:
+                raise TransferError("The selected backup contains no restorable selected content.")
+            prepared_archive = component_archive
+            prepared_is_temp = True
+
+            if not full_restore:
+                filtered_archive, details = self._build_filtered_restore_archive(
+                    prepared_archive,
+                    target,
+                    full_restore,
+                    False,
+                )
+                prepared_archive.unlink(missing_ok=True)
+                prepared_archive = filtered_archive
+
+            if full_restore:
+                self._remove_profile_component_paths(target, role, components)
+            else:
+                self._remove_cross_platform_selected_content(
+                    target,
+                    role,
+                    components,
+                    details["portable_addons"],
+                )
+
+            self._extract_archive_to_dir(
+                prepared_archive,
+                target,
+                role,
+                target["profile_root"],
+                progress_range=(progress_value(0.45), progress_value(0.84)),
+            )
+            self._target_exec(
+                target,
+                role,
+                f"rm -f {shlex.quote(target['profile_root'].rstrip('/') + '/' + META_NAME)}",
+                timeout=30,
+            )
+
+            progress(0.90, "Starting Kodi")
+            self._start_kodi(target, role)
+            time.sleep(3)
+            if not self._is_kodi_running(target, role):
+                raise TransferError("Kodi did not start after selective restore.")
+
+            progress(1.0, "Selective restore complete")
+            self.log("Selective restore completed: " + summary)
+            if details["binary_addons"]:
+                self.log(
+                    "Not copied (hardware-dependent source add-ons): "
+                    + ", ".join(details["binary_addons"])
+                )
+            self._set_status("restore", f"OK – selected content → {target['name']}")
+            return safety_path
+        except Exception:
+            if safety_path:
+                rollback_archive: Path | None = None
+                try:
+                    self.log("Selective restore failed. Restoring the changed components from the safety backup …")
+                    safety_meta, safety_legacy = self._read_backup(safety_path)
+                    _ = safety_meta
+                    rollback_archive = self._build_component_archive(
+                        safety_path,
+                        components,
+                        safety_legacy,
+                    )
+                    self._remove_profile_component_paths(target, role, components)
+                    if rollback_archive is not None:
+                        self._extract_archive_to_dir(
+                            rollback_archive,
+                            target,
+                            role,
+                            target["profile_root"],
+                            progress_range=(progress_value(0.20), progress_value(0.60)),
+                        )
+                    self.log("Selective rollback completed.")
+                except Exception as rollback_error:
+                    self.log(f"CRITICAL: Selective rollback failed: {rollback_error}")
+                finally:
+                    if rollback_archive is not None:
+                        try:
+                            rollback_archive.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+            if was_running:
+                try:
+                    self._start_kodi(target, role)
+                except Exception:
+                    pass
+            if safety_path:
+                self.log(f"Safety backup of the target profile is retained: {safety_path}")
+            raise
+        finally:
+            if prepared_is_temp and prepared_archive is not None:
+                try:
+                    prepared_archive.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
     # ---------- backup ----------
     def _backup_destination(self, info: dict) -> Path:
         root = Path(self.backup_dir_var.get().strip() or str(default_backup_dir()))
@@ -4027,7 +4797,12 @@ class TransferApp(tk.Tk):
         finally:
             client.close()
 
-    def _append_metadata(self, path: Path, info: dict) -> None:
+    def _append_metadata(
+        self,
+        path: Path,
+        info: dict,
+        components: list[str] | None = None,
+    ) -> None:
         try:
             with tarfile.open(path, "r:") as tf:
                 members = tf.getmembers()
@@ -4057,6 +4832,10 @@ class TransferApp(tk.Tk):
                 "version": info.get("version", ""),
             },
         }
+        if components is not None:
+            meta["selective"] = True
+            meta["components"] = list(components)
+
         data = json.dumps(meta, indent=2, ensure_ascii=False).encode("utf-8")
         ti = tarfile.TarInfo(META_NAME)
         ti.size = len(data)
@@ -4918,6 +5697,220 @@ class TransferApp(tk.Tk):
                     pass
 
     # ---------- workflows ----------
+    def _selective_backup_only(self) -> None:
+        components = self._require_selected_profile_components()
+        self._set_progress(5, "Checking source")
+        self._set_status("result", "Selective backup in progress …")
+        source = self._inspect_endpoint("source")
+
+        existing_paths = self._existing_profile_component_paths(
+            source, "source", components
+        )
+        available = self._components_for_existing_paths(components, existing_paths)
+        components = self._confirm_missing_components(
+            components,
+            available,
+            "on Source A",
+        )
+
+        path, _ = self._create_selective_backup(
+            source,
+            "source",
+            components,
+            progress_range=(15, 95),
+        )
+        self._ui_queue.put(("backup_file", str(path)))
+        self._set_status("result", "SUCCESS – Selective backup created")
+        self._ui_queue.put(
+            (
+                "message",
+                (
+                    "info",
+                    APP_TITLE,
+                    f"Selective backup created:\n\n{path}\n\n"
+                    f"Content: {self._profile_component_summary(components)}",
+                ),
+            )
+        )
+
+    def _selective_restore_only(self) -> None:
+        components = self._require_selected_profile_components()
+        self._set_progress(5, "Checking target")
+        self._set_status("result", "Selective restore in progress …")
+        backup = Path(self.backup_file_var.get().strip())
+        target = self._inspect_endpoint("target")
+        self._set_progress(12, "Preparing backup")
+        local_backup, temp_copy = self._localize_restore_source(backup)
+        try:
+            safety = self._restore_selective_backup(
+                local_backup,
+                target,
+                "target",
+                components,
+                confirm=True,
+                display_backup=backup,
+                progress_range=(15, 96),
+            )
+        finally:
+            if temp_copy is not None:
+                try:
+                    temp_copy.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        self._set_status("result", "SUCCESS – Selective restore completed")
+        msg = f"Selective restore completed:\n\n{backup}\n→ {target['ip']} – {target['name']}"
+        if safety:
+            msg += f"\n\nSafety backup of the previous target profile:\n{safety}"
+        self._ui_queue.put(("message", ("info", APP_TITLE, msg)))
+
+    def _selective_transfer(self) -> None:
+        components = self._require_selected_profile_components()
+
+        self._set_progress(4, "Checking source")
+        self._set_status("result", "Selective transfer A → B in progress …")
+        source = self._inspect_endpoint("source")
+
+        existing_paths = self._existing_profile_component_paths(
+            source, "source", components
+        )
+        available = self._components_for_existing_paths(components, existing_paths)
+        components = self._confirm_missing_components(
+            components,
+            available,
+            "on Source A",
+        )
+
+        self._set_progress(8, "Checking target")
+        target = self._inspect_endpoint("target")
+        if self._same_endpoint(source, target):
+            raise TransferError("Source and target are the same Kodi installation.")
+
+        source_meta = {
+            "format": "JJS-Kodi-Profile-Transfer",
+            "source": {
+                "platform": source["platform"],
+                "arch": source["arch"],
+                "arch_family": source["arch_family"],
+            },
+        }
+        _full_restore, _mode, components = self._confirm_selective_compatibility(
+            source_meta, target, components
+        )
+
+        summary = self._profile_component_summary(components)
+        if not self._ask_yes_no(
+            "Selective transfer A → B",
+            f"Source:\n{source['ip']} – {source['name']} ({source['identifier']})\n\n"
+            f"Target:\n{target['ip']} – {target['name']} ({target['identifier']})\n\n"
+            f"Transfer only:\n{summary}\n\nContinue?",
+        ):
+            raise TransferError("Selective transfer was cancelled before any target changes were made.")
+
+        backup, _ = self._create_selective_backup(
+            source,
+            "source",
+            components,
+            progress_range=(12, 40),
+        )
+        self._ui_queue.put(("backup_file", str(backup)))
+        local_backup, temp_copy = self._localize_restore_source(backup)
+        try:
+            safety = self._restore_selective_backup(
+                local_backup,
+                target,
+                "target",
+                components,
+                confirm=False,
+                display_backup=backup,
+                progress_range=(42, 96),
+            )
+        finally:
+            if temp_copy is not None:
+                try:
+                    temp_copy.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+        self._set_status("result", "SUCCESS – Selective transfer A → B completed")
+        msg = (
+            f"Selective transfer completed.\n\n"
+            f"Content: {summary}\n\n"
+            f"Backup:\n{backup}\n\n"
+            f"Target:\n{target['ip']} – {target['name']}"
+        )
+        if safety:
+            msg += f"\n\nSafety backup of the previous target profile:\n{safety}"
+        self._ui_queue.put(("message", ("info", APP_TITLE, msg)))
+
+    def _delete_profile_content(self) -> None:
+        components = self._require_selected_profile_components()
+
+        self._set_progress(5, "Checking target")
+        self._set_status("result", "Deleting selected profile content …")
+        target = self._inspect_endpoint("target")
+
+        existing_paths = self._existing_profile_component_paths(
+            target, "target", components
+        )
+        available = self._components_for_existing_paths(components, existing_paths)
+        components = self._confirm_missing_components(
+            components,
+            available,
+            "on Target",
+        )
+
+        summary = self._profile_component_summary(components)
+        if not self._ask_yes_no(
+            "Delete target content",
+            f"Target:\n{target['ip']} – {target['name']} ({target['identifier']})\n\n"
+            f"Delete:\n{summary}\n\n"
+            "Only the selected content will be removed. This operation is destructive. Continue?",
+        ):
+            raise TransferError("Delete operation was cancelled before any target changes were made.")
+
+        was_running = self._is_kodi_running(target, "target")
+        safety_path: Path | None = None
+        try:
+            if self.safety_backup_var.get() and self._profile_nonempty(target, "target"):
+                self.log("Creating a safety backup before deleting profile content …")
+                safety_path, safety_was_running = self._create_backup(
+                    target,
+                    "target",
+                    leave_stopped=True,
+                    progress_range=(12, 55),
+                )
+                was_running = was_running or safety_was_running
+            elif was_running:
+                self._stop_kodi(target, "target")
+                time.sleep(1)
+
+            self._set_progress(65, "Deleting selected content")
+            self._remove_profile_component_paths(target, "target", components)
+
+            if was_running:
+                self._set_progress(90, "Starting Kodi")
+                self._start_kodi(target, "target")
+
+            self._set_progress(100, "Delete complete")
+            self._set_status("result", "SUCCESS – Selected profile content deleted")
+            msg = (
+                f"Selected profile content deleted from:\n"
+                f"{target['ip']} – {target['name']}\n\n"
+                f"Deleted: {summary}"
+            )
+            if safety_path:
+                msg += f"\n\nSafety backup:\n{safety_path}"
+            self._ui_queue.put(("message", ("info", APP_TITLE, msg)))
+        except Exception:
+            if was_running:
+                try:
+                    self._start_kodi(target, "target")
+                except Exception:
+                    pass
+            if safety_path:
+                self.log(f"Safety backup of the target profile is retained: {safety_path}")
+            raise
+
     def _backup_only(self) -> None:
         self._set_progress(5, "Checking source")
         self._set_status("result", "Backup in progress …")
@@ -4927,8 +5920,7 @@ class TransferApp(tk.Tk):
             "source",
             progress_range=(15, 95),
         )
-        self.backup_file_var.set(str(path))
-        self._save_config()
+        self._ui_queue.put(("backup_file", str(path)))
         self._set_status("result", "SUCCESS – Backup created")
         self._ui_queue.put(("message", ("info", APP_TITLE, f"Backup created:\n\n{path}")))
 
@@ -4989,8 +5981,7 @@ class TransferApp(tk.Tk):
             "source",
             progress_range=(12, 40),
         )
-        self.backup_file_var.set(str(backup))
-        self._save_config()
+        self._ui_queue.put(("backup_file", str(backup)))
         local_backup, temp_copy = self._localize_restore_source(backup)
         try:
             safety = self._restore_backup(

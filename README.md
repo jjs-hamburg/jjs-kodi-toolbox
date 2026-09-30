@@ -2,7 +2,7 @@
 
 Windows toolbox for managing Kodi on **Android / NVIDIA Shield (ADB)** and **LibreELEC (SSH)**.
 
-Current version: **1.28**
+Current version: **1.29**
 
 ## What it does
 
@@ -15,6 +15,10 @@ Current version: **1.28**
   - Direct transfer from Source A to Target B
   - Same-platform restore: complete profile
   - Cross-platform or cross-architecture restore: keeps the target `Addons*.db`, restores portable add-ons/settings, skips platform-/architecture-dependent binary add-ons
+  - Selective profile backup, restore, transfer and target-content deletion
+  - Shared selective choices in the main window for settings, user profiles, add-ons, add-on settings, SQLite Music/Video/Textures/Add-ons DBs, thumbnail files, keymaps, playlists, library nodes and profile media/backgrounds
+  - Missing selected content is detected before target changes; you can cancel or continue with the available selected content
+  - Cross-platform selective transfers warn before incompatible add-ons/settings are filtered
 
 - **Install / update Kodi**
   - Android: install or update a local APK with `adb install -r`
@@ -67,7 +71,7 @@ Current version: **1.28**
 
 Get the current Windows build from:
 
-**Releases → JJS KODI Toolbox 1.28**
+**Releases → JJS KODI Toolbox 1.29**
 
 Files:
 
