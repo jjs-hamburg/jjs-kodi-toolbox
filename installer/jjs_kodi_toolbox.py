@@ -5774,17 +5774,18 @@ class TransferApp(tk.Tk):
             swapped = True
             staged = False
 
-            if target["platform"] == "libreelec" and was_running:
-                progress(0.94, "Starting Kodi")
-                self._start_kodi(target, role)
-                self.log("LibreELEC Kodi restarted after restore.")
-            else:
-                progress(0.94, "Finalizing restore")
-                self.log("Kodi remains stopped after restore.")
-
-            progress(0.98, "Committing restore")
+            progress(0.94, "Committing restore")
             self._commit_restore_stage(target, role)
             swapped = False
+
+            if target["platform"] == "libreelec" and was_running:
+                progress(0.98, "Starting Kodi")
+                self._start_kodi(target, role)
+                self.log("LibreELEC Kodi restarted after restore commit.")
+            else:
+                progress(0.98, "Finalizing restore")
+                self.log("Kodi remains stopped after restore.")
+
             progress(1.0, "Restore complete")
 
             if details["binary_addons"]:
