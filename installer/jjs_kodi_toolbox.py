@@ -4793,11 +4793,8 @@ class TransferApp(tk.Tk):
                 timeout=30,
             )
 
-            progress(0.90, "Starting Kodi")
-            self._start_kodi(target, role)
-            time.sleep(3)
-            if not self._is_kodi_running(target, role):
-                raise TransferError("Kodi did not start after selective restore.")
+            progress(0.90, "Finalizing selective restore")
+            self.log("Kodi remains stopped after selective restore.")
 
             progress(1.0, "Selective restore complete")
             self.log("Selective restore completed: " + summary)
@@ -4839,10 +4836,7 @@ class TransferApp(tk.Tk):
                         except Exception:
                             pass
             if was_running:
-                try:
-                    self._start_kodi(target, role)
-                except Exception:
-                    pass
+                self.log("Kodi remains stopped after selective restore failure.")
             if safety_path:
                 self.log(f"Safety backup of the target profile is retained: {safety_path}")
             raise
@@ -5769,11 +5763,8 @@ class TransferApp(tk.Tk):
             swapped = True
             staged = False
 
-            progress(0.94, "Starting Kodi")
-            self._start_kodi(target, role)
-            time.sleep(3)
-            if not self._is_kodi_running(target, role):
-                raise TransferError("Kodi did not start with the restored profile.")
+            progress(0.94, "Finalizing restore")
+            self.log("Kodi remains stopped after restore.")
 
             progress(0.98, "Committing restore")
             self._commit_restore_stage(target, role)
@@ -5808,10 +5799,7 @@ class TransferApp(tk.Tk):
                     pass
 
             if was_running:
-                try:
-                    self._start_kodi(target, role)
-                except Exception:
-                    pass
+                self.log("Kodi remains stopped after restore failure.")
             if safety_path:
                 self.log(f"Safety backup of the target profile is retained: {safety_path}")
             raise
@@ -5939,6 +5927,7 @@ class TransferApp(tk.Tk):
                 source,
                 "source",
                 components,
+                leave_stopped=True,
                 progress_range=(12, 40),
                 destination_override=backup,
             )
@@ -6103,6 +6092,7 @@ class TransferApp(tk.Tk):
             backup, _ = self._create_backup(
                 source,
                 "source",
+                leave_stopped=True,
                 progress_range=(12, 40),
                 destination_override=backup,
             )
