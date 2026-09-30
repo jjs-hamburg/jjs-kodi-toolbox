@@ -1390,6 +1390,14 @@ class TransferApp(tk.Tk):
                 elif kind == "backup_file":
                     self.backup_file_var.set(str(payload))
                     self._save_config()
+                elif kind == "database_restore_file":
+                    self.database_restore_file_var.set(str(payload))
+                elif kind == "install_profile_value":
+                    value, done = payload
+                    try:
+                        self._endpoint_vars["install"]["profile"].set(str(value))
+                    finally:
+                        done.set()
                 elif kind == "busy":
                     self._apply_busy(bool(payload))
                 elif kind == "progress":
@@ -2714,7 +2722,7 @@ class TransferApp(tk.Tk):
                 if stopped:
                     self._database_start_kodi(info)
 
-        self.database_restore_file_var.set(str(result["path"]))
+        self._ui_queue.put(("database_restore_file", str(result["path"])))
         self._set_status(
             "database",
             f"Backup complete: {result['engine']} | {result['database']} | schema {result['schema_version']}",
@@ -3411,7 +3419,9 @@ class TransferApp(tk.Tk):
         selected_text = str(self._endpoint_vars["install"]["profile"].get()).strip()
         info = self._inspect_install_device()
         if selected_text:
-            self._endpoint_vars["install"]["profile"].set(selected_text)
+            done = threading.Event()
+            self._ui_queue.put(("install_profile_value", (selected_text, done)))
+            done.wait()
         profile = self._selected_install_profile()
 
         backup_requested = bool(self.uninstall_backup_var.get())
