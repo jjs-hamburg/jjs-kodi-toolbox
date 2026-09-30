@@ -4302,6 +4302,96 @@ class TransferApp(tk.Tk):
             )
         return [line.strip() for line in out.splitlines() if line.strip()]
 
+    def _backup_metadata_bytes(
+        self,
+        info: dict,
+        components: list[str] | None = None,
+    ) -> bytes:
+        meta = {
+            "format": "JJS-Kodi-Profile-Transfer",
+            "format_version": 1,
+            "created_local": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+            "source": {
+                "platform": info["platform"],
+                "ip": info["ip"],
+                "name": info["name"],
+                "identifier": info["identifier"],
+                "profile_root": info["profile_root"],
+                "arch": info["arch"],
+                "arch_family": info["arch_family"],
+                "version": info.get("version", ""),
+            },
+        }
+        if components is not None:
+            meta["selective"] = True
+            meta["components"] = list(components)
+        return json.dumps(meta, indent=2, ensure_ascii=False).encode("utf-8")
+
+    def _stage_backup_metadata(
+        self,
+        info: dict,
+        role: str,
+        components: list[str] | None = None,
+    ) -> None:
+        remote_path = info["profile_root"].rstrip("/") + "/" + META_NAME
+        data = self._backup_metadata_bytes(info, components)
+
+        with tempfile.TemporaryDirectory(prefix="jjs-kodi-meta-") as td:
+            local_path = Path(td) / META_NAME
+            local_path.write_bytes(data)
+
+            if info["platform"] == "android":
+                cp = self._run(
+                    [
+                        str(self._find_or_install_adb()),
+                        "-s",
+                        info["serial"],
+                        "push",
+                        str(local_path),
+                        remote_path,
+                    ],
+                    timeout=60,
+                )
+                if cp.returncode != 0:
+                    raise TransferError(
+                        "Backup metadata could not be staged on the Android source."
+                    )
+                return
+
+            client = self._ssh_client(role)
+            sftp = None
+            try:
+                sftp = client.open_sftp()
+                sftp.put(str(local_path), remote_path)
+            except Exception as e:
+                raise TransferError(
+                    f"Backup metadata could not be staged on the LibreELEC source: {e}"
+                ) from e
+            finally:
+                if sftp is not None:
+                    try:
+                        sftp.close()
+                    except Exception:
+                        pass
+                client.close()
+
+    def _remove_staged_backup_metadata(self, info: dict, role: str) -> None:
+        remote_path = info["profile_root"].rstrip("/") + "/" + META_NAME
+        try:
+            code, _, err = self._target_exec(
+                info,
+                role,
+                f"rm -f {shlex.quote(remote_path)}",
+                timeout=30,
+            )
+            if code != 0:
+                self.log(
+                    "WARNING: Temporary backup metadata could not be removed from source."
+                    + (f" Device: {err.strip()}" if err.strip() else "")
+                )
+        except Exception as e:
+            self.log(f"WARNING: Temporary backup metadata cleanup failed: {e}")
+
     def _selective_backup_destination(self, info: dict) -> Path:
         root = Path(self.backup_dir_var.get().strip() or str(default_backup_dir()))
         try:
@@ -4337,6 +4427,7 @@ class TransferApp(tk.Tk):
             "-C",
             info["profile_root"],
             *paths,
+            META_NAME,
         ]
         self.log("$ " + subprocess.list2cmdline(cmd))
         with tempfile.TemporaryFile() as err, destination.open("wb") as out:
@@ -4369,7 +4460,7 @@ class TransferApp(tk.Tk):
     ) -> None:
         client = self._ssh_client(role)
         root = shlex.quote(info["profile_root"])
-        selected = " ".join(shlex.quote(path) for path in paths)
+        selected = " ".join(shlex.quote(path) for path in [*paths, META_NAME])
         try:
             self.log(f"$ ssh: tar -cf - -C {root} {selected}")
             _stdin, stdout, stderr = client.exec_command(
@@ -4421,7 +4512,12 @@ class TransferApp(tk.Tk):
             self._stop_kodi(info, role)
             time.sleep(1)
 
+        metadata_staged = False
         try:
+            progress(0.18, "Preparing backup metadata")
+            self._stage_backup_metadata(info, role, components)
+            metadata_staged = True
+
             progress(0.20, "Transferring selected content")
             self.log(
                 "Backing up selected Kodi profile content: "
@@ -4431,16 +4527,10 @@ class TransferApp(tk.Tk):
                 self._stream_android_selective_backup(info, paths, destination)
             else:
                 self._stream_ssh_selective_backup(info, role, paths, destination)
-            progress(0.88, "Finalizing selective backup")
-            self._append_metadata(
-            destination,
-            info,
-            components,
-            progress_range=(
-                progress_start + (progress_end - progress_start) * 0.88,
-                progress_start + (progress_end - progress_start) * 0.93,
-            ),
-        )
+
+            if not destination.is_file() or destination.stat().st_size <= 0:
+                raise TransferError("Backup TAR is empty.")
+            progress(0.93, "Finalizing selective backup")
         except Exception:
             try:
                 destination.unlink(missing_ok=True)
@@ -4452,6 +4542,9 @@ class TransferApp(tk.Tk):
                 except Exception:
                     pass
             raise
+        finally:
+            if metadata_staged:
+                self._remove_staged_backup_metadata(info, role)
 
         if was_running and not leave_stopped:
             progress(0.94, "Starting Kodi")
@@ -4805,63 +4898,6 @@ class TransferApp(tk.Tk):
         finally:
             client.close()
 
-    def _append_metadata(
-        self,
-        path: Path,
-        info: dict,
-        components: list[str] | None = None,
-        progress_range: tuple[float, float] | None = None,
-    ) -> None:
-        progress_start, progress_end = progress_range or (0.0, 0.0)
-
-        def report(fraction: float, text: str) -> None:
-            self._check_cancelled()
-            if progress_end > progress_start:
-                self._set_progress(
-                    progress_start + (progress_end - progress_start) * fraction,
-                    text,
-                )
-
-        try:
-            report(0.0, "Finalizing backup – checking TAR")
-            if not path.is_file() or path.stat().st_size <= 0:
-                raise TransferError("Backup TAR is empty.")
-            with tarfile.open(path, "r:"):
-                pass
-        except TransferError:
-            raise
-        except Exception as e:
-            raise TransferError(f"Generated TAR backup is invalid: {e}") from e
-
-        meta = {
-            "format": "JJS-Kodi-Profile-Transfer",
-            "format_version": 1,
-            "created_local": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
-            "source": {
-                "platform": info["platform"],
-                "ip": info["ip"],
-                "name": info["name"],
-                "identifier": info["identifier"],
-                "profile_root": info["profile_root"],
-                "arch": info["arch"],
-                "arch_family": info["arch_family"],
-                "version": info.get("version", ""),
-            },
-        }
-        if components is not None:
-            meta["selective"] = True
-            meta["components"] = list(components)
-
-        data = json.dumps(meta, indent=2, ensure_ascii=False).encode("utf-8")
-        ti = tarfile.TarInfo(META_NAME)
-        ti.size = len(data)
-        ti.mtime = int(time.time())
-        ti.mode = 0o644
-        report(0.95, "Finalizing backup – writing metadata")
-        with tarfile.open(path, "a:") as tf:
-            tf.addfile(ti, io.BytesIO(data))
-        report(1.0, "Finalizing backup – metadata written")
-
     def _create_backup(
         self,
         info: dict,
@@ -4888,22 +4924,22 @@ class TransferApp(tk.Tk):
             self._stop_kodi(info, role)
             time.sleep(1)
 
+        metadata_staged = False
         try:
+            progress(0.18, "Preparing backup metadata")
+            self._stage_backup_metadata(info, role)
+            metadata_staged = True
+
             progress(0.20, "Transferring profile")
             self.log(f"Backing up complete Kodi profile directly to: {destination}")
             if info["platform"] == "android":
                 self._stream_android_backup(info, destination)
             else:
                 self._stream_ssh_backup(info, role, destination)
-            progress(0.88, "Finalizing backup")
-            self._append_metadata(
-                destination,
-                info,
-                progress_range=(
-                    progress_start + (progress_end - progress_start) * 0.88,
-                    progress_start + (progress_end - progress_start) * 0.93,
-                ),
-            )
+
+            if not destination.is_file() or destination.stat().st_size <= 0:
+                raise TransferError("Backup TAR is empty.")
+            progress(0.93, "Finalizing backup")
         except Exception:
             try:
                 if destination.exists():
@@ -4916,6 +4952,9 @@ class TransferApp(tk.Tk):
                 except Exception:
                     pass
             raise
+        finally:
+            if metadata_staged:
+                self._remove_staged_backup_metadata(info, role)
 
         if was_running and not leave_stopped:
             progress(0.94, "Starting Kodi")
