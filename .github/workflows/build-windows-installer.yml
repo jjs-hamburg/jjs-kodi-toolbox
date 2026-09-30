@@ -159,9 +159,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "v1.28"
-          $title = "JJS KODI Toolbox 1.28"
-          $notes = "Fixes cross-architecture profile restore handling. Transfers such as LibreELEC x86_64 to LibreELEC aarch64 now keep the target add-on database and skip architecture-dependent binary add-ons instead of performing a full restore."
+          $tag = "v1.29"
+          $title = "JJS KODI Toolbox 1.29"
+          $notes = "Adds selective profile backup, restore, transfer and target-content deletion with shared main-window selection, preflight checks for missing content, cross-platform compatibility warnings, separate SQLite database groups, a scrollable profile tab, symmetric Source/Target layout, and fixes for progress-dialog completion deadlocks. Full-profile workflows remain available unchanged."
 
           if (gh release view $tag 2>$null) {
             gh release upload $tag dist/JJS-KODI-Toolbox.exe dist/SHA256SUMS.txt --clobber
