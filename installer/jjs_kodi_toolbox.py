@@ -459,14 +459,32 @@ class TransferApp(tk.Tk):
             for key in ("source", "target", "backup", "restore", "result")
         }
 
-        endpoints_box = ttk.LabelFrame(outer, text="Source / Target", padding=10)
+        canvas = tk.Canvas(outer, highlightthickness=0, borderwidth=0)
+        tab_scroll = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=tab_scroll.set)
+        tab_scroll.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        content = ttk.Frame(canvas)
+        content_window = canvas.create_window((0, 0), window=content, anchor="nw")
+
+        def update_scroll_region(_event=None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def fit_content_width(event) -> None:
+            canvas.itemconfigure(content_window, width=event.width)
+
+        content.bind("<Configure>", update_scroll_region)
+        canvas.bind("<Configure>", fit_content_width)
+
+        endpoints_box = ttk.LabelFrame(content, text="Source / Target", padding=10)
         endpoints_box.pack(fill="x")
         endpoints_box.columnconfigure(0, weight=1, uniform="profile_endpoint")
         endpoints_box.columnconfigure(1, weight=1, uniform="profile_endpoint")
         self._build_endpoint(endpoints_box, "source", "Source A", 0)
         self._build_endpoint(endpoints_box, "target", "Target B", 1)
 
-        backup_box = ttk.LabelFrame(outer, text="Backup", padding=10)
+        backup_box = ttk.LabelFrame(content, text="Backup", padding=10)
         backup_box.pack(fill="x", pady=(10, 0))
         backup_box.columnconfigure(1, weight=1)
         self._path_row(backup_box, 0, "ADB folder:", self.adb_dir_var, self._browse_adb_dir)
@@ -482,7 +500,7 @@ class TransferApp(tk.Tk):
             variable=self.safety_backup_var,
         ).grid(row=3, column=1, sticky="w", pady=(5, 0))
 
-        full_box = ttk.LabelFrame(outer, text="Full Profiles", padding=10)
+        full_box = ttk.LabelFrame(content, text="Full Profiles", padding=10)
         full_box.pack(fill="x", pady=(10, 0))
         full_actions = ttk.Frame(full_box)
         full_actions.pack(fill="x")
@@ -495,16 +513,18 @@ class TransferApp(tk.Tk):
             b.pack(side="left", padx=(0, 8))
             self._action_buttons.append(b)
 
-        selective_box = ttk.LabelFrame(outer, text="Selective Profiles", padding=10)
+        selective_box = ttk.LabelFrame(content, text="Selective Profiles", padding=10)
         selective_box.pack(fill="x", pady=(10, 0))
         ttk.Label(
             selective_box,
             text="The same selection is used for backup, restore, transfer and delete.",
         ).grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 6))
 
+        component_columns = 5
+        component_rows = (len(PROFILE_COMPONENTS) + component_columns - 1) // component_columns
         for index, (key, (label, _paths)) in enumerate(PROFILE_COMPONENTS.items()):
-            row = 1 + index // 5
-            column = index % 5
+            row = 1 + index // component_columns
+            column = index % component_columns
             ttk.Checkbutton(
                 selective_box,
                 text=label,
@@ -512,26 +532,39 @@ class TransferApp(tk.Tk):
                 command=self._save_config,
             ).grid(row=row, column=column, sticky="w", padx=(0, 14), pady=2)
 
+        actions_row = 1 + component_rows
         selective_actions = ttk.Frame(selective_box)
-        selective_actions.grid(row=3, column=0, columnspan=5, sticky="w", pady=(10, 0))
+        selective_actions.grid(
+            row=actions_row,
+            column=0,
+            columnspan=component_columns,
+            sticky="w",
+            pady=(10, 0),
+        )
         for text, fn in (
             ("BACKUP", lambda: self._start_worker(self._selective_backup_only, operation_title="Selective profile backup")),
             ("RESTORE", lambda: self._start_worker(self._selective_restore_only, operation_title="Selective profile restore")),
             ("TRANSFER A → B", lambda: self._start_worker(self._selective_transfer, operation_title="Selective profile transfer A → B")),
-            ("DELETE CONTENT", lambda: self._start_worker(self._delete_profile_content, operation_title="Delete profile content")),
+            ("DELETE TARGET CONTENT", lambda: self._start_worker(self._delete_profile_content, operation_title="Delete target content")),
         ):
             b = ttk.Button(selective_actions, text=text, command=fn)
             b.pack(side="left", padx=(0, 8))
             self._action_buttons.append(b)
 
         result_row = ttk.Frame(selective_box)
-        result_row.grid(row=4, column=0, columnspan=5, sticky="ew", pady=(8, 0))
+        result_row.grid(
+            row=actions_row + 1,
+            column=0,
+            columnspan=component_columns,
+            sticky="ew",
+            pady=(8, 0),
+        )
         ttk.Label(result_row, text="Result:").pack(side="left")
         ttk.Label(result_row, textvariable=self.status_vars["result"]).pack(
             side="left", padx=(8, 0)
         )
 
-        log_box = ttk.LabelFrame(outer, text="Log", padding=6)
+        log_box = ttk.LabelFrame(content, text="Log", padding=6)
         log_box.pack(fill="both", expand=True, pady=(10, 0))
         self.log_text = tk.Text(
             log_box, wrap="word", height=10, font=("Consolas", 9), state="disabled"
@@ -541,6 +574,23 @@ class TransferApp(tk.Tk):
         self.log_text.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
         self._log_widgets.append(self.log_text)
+
+        def bind_profile_mousewheel(widget) -> None:
+            if isinstance(widget, tk.Text):
+                return
+            widget.bind(
+                "<MouseWheel>",
+                lambda event: canvas.yview_scroll(
+                    -1 if event.delta > 0 else 1,
+                    "units",
+                ),
+                add="+",
+            )
+            for child in widget.winfo_children():
+                bind_profile_mousewheel(child)
+
+        bind_profile_mousewheel(content)
+        update_scroll_region()
 
     def _build_install_tab(self, outer) -> None:
         connection = ttk.LabelFrame(outer, text="Target device", padding=10)
@@ -5806,12 +5856,12 @@ class TransferApp(tk.Tk):
         components = self._confirm_missing_components(
             components,
             available,
-            "on Target B",
+            "on Target",
         )
 
         summary = self._profile_component_summary(components)
         if not self._ask_yes_no(
-            "Delete profile content",
+            "Delete target content",
             f"Target:\n{target['ip']} – {target['name']} ({target['identifier']})\n\n"
             f"Delete:\n{summary}\n\n"
             "Only the selected content will be removed. This operation is destructive. Continue?",
