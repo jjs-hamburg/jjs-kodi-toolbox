@@ -4466,7 +4466,9 @@ class TransferApp(tk.Tk):
                             + (f" Device: {err.strip()}" if err.strip() else "")
                         )
 
-        # Add-ons DB is intentionally kept untouched on cross-platform restores.\n\n    def _build_component_archive(
+        # Add-ons DB is intentionally kept untouched on cross-platform restores.
+
+    def _build_component_archive(
         self,
         backup: Path,
         components: list[str],
