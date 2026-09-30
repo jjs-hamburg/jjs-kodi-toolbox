@@ -461,8 +461,8 @@ class TransferApp(tk.Tk):
 
         endpoints_box = ttk.LabelFrame(outer, text="Source / Target", padding=10)
         endpoints_box.pack(fill="x")
-        endpoints_box.columnconfigure(0, weight=1)
-        endpoints_box.columnconfigure(1, weight=1)
+        endpoints_box.columnconfigure(0, weight=1, uniform="profile_endpoint")
+        endpoints_box.columnconfigure(1, weight=1, uniform="profile_endpoint")
         self._build_endpoint(endpoints_box, "source", "Source A", 0)
         self._build_endpoint(endpoints_box, "target", "Target B", 1)
 
