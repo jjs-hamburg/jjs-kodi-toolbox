@@ -2902,13 +2902,16 @@ class TransferApp(tk.Tk):
                 self.log(f"{label} restore completed and verified.")
         finally:
             if stopped and info is not None:
-                cancel_enabled = self._cancel_enabled
-                self._cancel_enabled = False
-                try:
-                    self._set_progress(97, "Restarting Kodi")
-                    self._database_start_kodi(info)
-                finally:
-                    self._cancel_enabled = cancel_enabled
+                if info["platform"] == "libreelec":
+                    cancel_enabled = self._cancel_enabled
+                    self._cancel_enabled = False
+                    try:
+                        self._set_progress(97, "Restarting Kodi")
+                        self._database_start_kodi(info)
+                    finally:
+                        self._cancel_enabled = cancel_enabled
+                else:
+                    self.log("Kodi remains stopped after database restore.")
 
     # ---------- endpoint discovery ----------
     def _profile_display(self, profile: dict) -> str:
