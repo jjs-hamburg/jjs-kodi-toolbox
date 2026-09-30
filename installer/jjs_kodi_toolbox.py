@@ -4488,6 +4488,7 @@ class TransferApp(tk.Tk):
         components: list[str],
         leave_stopped: bool = False,
         progress_range: tuple[float, float] | None = None,
+        destination_override: Path | None = None,
     ) -> tuple[Path, bool]:
         progress_start, progress_end = progress_range or (15.0, 92.0)
 
@@ -4503,7 +4504,8 @@ class TransferApp(tk.Tk):
         if not paths:
             raise TransferError("None of the selected profile content exists on this Kodi installation.")
 
-        destination = self._selective_backup_destination(info)
+        destination = destination_override or self._selective_backup_destination(info)
+        destination.parent.mkdir(parents=True, exist_ok=True)
         progress(0.08, "Preparing selective backup")
         was_running = self._is_kodi_running(info, role)
         if was_running:
@@ -4904,6 +4906,7 @@ class TransferApp(tk.Tk):
         role: str,
         leave_stopped: bool = False,
         progress_range: tuple[float, float] | None = None,
+        destination_override: Path | None = None,
     ) -> tuple[Path, bool]:
         progress_start, progress_end = progress_range or (15.0, 92.0)
 
@@ -4915,7 +4918,8 @@ class TransferApp(tk.Tk):
         if not info["profile_exists"] and not self._profile_nonempty(info, role):
             raise TransferError("The selected Kodi installation does not have a profile to back up yet.")
 
-        destination = self._backup_destination(info)
+        destination = destination_override or self._backup_destination(info)
+        destination.parent.mkdir(parents=True, exist_ok=True)
         progress(0.08, "Preparing backup")
         was_running = self._is_kodi_running(info, role)
         if was_running:
@@ -5870,36 +5874,31 @@ class TransferApp(tk.Tk):
         ):
             raise TransferError("Selective transfer was cancelled before any target changes were made.")
 
-        backup, _ = self._create_selective_backup(
-            source,
-            "source",
-            components,
-            progress_range=(12, 40),
-        )
-        self._ui_queue.put(("backup_file", str(backup)))
-        local_backup, temp_copy = self._localize_restore_source(backup)
-        try:
+        with tempfile.TemporaryDirectory(prefix="jjs-kodi-transfer-") as td:
+            backup = Path(td) / "source-selective-profile.tar"
+            self.log(f"Using local temporary transfer archive: {backup}")
+            backup, _ = self._create_selective_backup(
+                source,
+                "source",
+                components,
+                progress_range=(12, 40),
+                destination_override=backup,
+            )
             safety = self._restore_selective_backup(
-                local_backup,
+                backup,
                 target,
                 "target",
                 components,
                 confirm=False,
-                display_backup=backup,
+                display_backup=Path("local temporary transfer archive"),
                 progress_range=(42, 96),
             )
-        finally:
-            if temp_copy is not None:
-                try:
-                    temp_copy.unlink(missing_ok=True)
-                except Exception:
-                    pass
 
         self._set_status("result", "SUCCESS – Selective transfer A → B completed")
         msg = (
             f"Selective transfer completed.\n\n"
             f"Content: {summary}\n\n"
-            f"Backup:\n{backup}\n\n"
+            f"Temporary source archive was stored locally and removed after transfer.\n\n"
             f"Target:\n{target['ip']} – {target['name']}"
         )
         if safety:
@@ -6040,33 +6039,28 @@ class TransferApp(tk.Tk):
         ):
             raise TransferError("Transfer was cancelled.")
 
-        backup, _ = self._create_backup(
-            source,
-            "source",
-            progress_range=(12, 40),
-        )
-        self._ui_queue.put(("backup_file", str(backup)))
-        local_backup, temp_copy = self._localize_restore_source(backup)
-        try:
+        with tempfile.TemporaryDirectory(prefix="jjs-kodi-transfer-") as td:
+            backup = Path(td) / "source-profile.tar"
+            self.log(f"Using local temporary transfer archive: {backup}")
+            backup, _ = self._create_backup(
+                source,
+                "source",
+                progress_range=(12, 40),
+                destination_override=backup,
+            )
             safety = self._restore_backup(
-                local_backup,
+                backup,
                 target,
                 "target",
                 confirm=False,
-                display_backup=backup,
+                display_backup=Path("local temporary transfer archive"),
                 progress_range=(42, 96),
             )
-        finally:
-            if temp_copy is not None:
-                try:
-                    temp_copy.unlink(missing_ok=True)
-                except Exception:
-                    pass
 
         self._set_status("result", "SUCCESS – Transfer A → B completed")
         msg = (
             f"Transfer completed.\n\n"
-            f"Backup:\n{backup}\n\n"
+            f"Temporary source archive was stored locally and removed after transfer.\n\n"
             f"Target:\n{target['ip']} – {target['name']}"
         )
         if safety:
