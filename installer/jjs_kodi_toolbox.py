@@ -4823,21 +4823,11 @@ class TransferApp(tk.Tk):
                 )
 
         try:
-            report(0.0, "Finalizing backup – reading TAR index")
-            with tarfile.open(path, "r:") as tf:
-                members = tf.getmembers()
-                if not members:
-                    raise TransferError("Backup TAR is empty.")
-                total = len(members)
-                for index, member in enumerate(members, start=1):
-                    validate_tar_path(member.name)
-                    if member.issym() or member.islnk():
-                        validate_tar_path(member.linkname)
-                    if index == total or index % 250 == 0:
-                        report(
-                            0.9 * index / total,
-                            f"Finalizing backup – checking {index:,}/{total:,} entries",
-                        )
+            report(0.0, "Finalizing backup – checking TAR")
+            if not path.is_file() or path.stat().st_size <= 0:
+                raise TransferError("Backup TAR is empty.")
+            with tarfile.open(path, "r:"):
+                pass
         except TransferError:
             raise
         except Exception as e:
