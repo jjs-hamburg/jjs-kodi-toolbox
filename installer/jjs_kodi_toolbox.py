@@ -4793,8 +4793,13 @@ class TransferApp(tk.Tk):
                 timeout=30,
             )
 
-            progress(0.90, "Finalizing selective restore")
-            self.log("Kodi remains stopped after selective restore.")
+            if target["platform"] == "libreelec" and was_running:
+                progress(0.90, "Starting Kodi")
+                self._start_kodi(target, role)
+                self.log("LibreELEC Kodi restarted after selective restore.")
+            else:
+                progress(0.90, "Finalizing selective restore")
+                self.log("Kodi remains stopped after selective restore.")
 
             progress(1.0, "Selective restore complete")
             self.log("Selective restore completed: " + summary)
@@ -4835,7 +4840,13 @@ class TransferApp(tk.Tk):
                             rollback_archive.unlink(missing_ok=True)
                         except Exception:
                             pass
-            if was_running:
+            if target["platform"] == "libreelec" and was_running:
+                try:
+                    self._start_kodi(target, role)
+                    self.log("LibreELEC Kodi restarted after selective restore failure.")
+                except Exception as restart_error:
+                    self.log(f"WARNING: LibreELEC Kodi could not be restarted: {restart_error}")
+            elif was_running:
                 self.log("Kodi remains stopped after selective restore failure.")
             if safety_path:
                 self.log(f"Safety backup of the target profile is retained: {safety_path}")
@@ -5763,8 +5774,13 @@ class TransferApp(tk.Tk):
             swapped = True
             staged = False
 
-            progress(0.94, "Finalizing restore")
-            self.log("Kodi remains stopped after restore.")
+            if target["platform"] == "libreelec" and was_running:
+                progress(0.94, "Starting Kodi")
+                self._start_kodi(target, role)
+                self.log("LibreELEC Kodi restarted after restore.")
+            else:
+                progress(0.94, "Finalizing restore")
+                self.log("Kodi remains stopped after restore.")
 
             progress(0.98, "Committing restore")
             self._commit_restore_stage(target, role)
@@ -5798,7 +5814,13 @@ class TransferApp(tk.Tk):
                 except Exception:
                     pass
 
-            if was_running:
+            if target["platform"] == "libreelec" and was_running:
+                try:
+                    self._start_kodi(target, role)
+                    self.log("LibreELEC Kodi restarted after restore failure.")
+                except Exception as restart_error:
+                    self.log(f"WARNING: LibreELEC Kodi could not be restarted: {restart_error}")
+            elif was_running:
                 self.log("Kodi remains stopped after restore failure.")
             if safety_path:
                 self.log(f"Safety backup of the target profile is retained: {safety_path}")
@@ -5927,7 +5949,7 @@ class TransferApp(tk.Tk):
                 source,
                 "source",
                 components,
-                leave_stopped=True,
+                leave_stopped=(source["platform"] != "libreelec"),
                 progress_range=(12, 40),
                 destination_override=backup,
             )
@@ -6092,7 +6114,7 @@ class TransferApp(tk.Tk):
             backup, _ = self._create_backup(
                 source,
                 "source",
-                leave_stopped=True,
+                leave_stopped=(source["platform"] != "libreelec"),
                 progress_range=(12, 40),
                 destination_override=backup,
             )
