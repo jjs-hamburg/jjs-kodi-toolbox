@@ -1387,6 +1387,9 @@ class TransferApp(tk.Tk):
                 elif kind == "status":
                     key, text = payload
                     self.status_vars[key].set(text)
+                elif kind == "backup_file":
+                    self.backup_file_var.set(str(payload))
+                    self._save_config()
                 elif kind == "busy":
                     self._apply_busy(bool(payload))
                 elif kind == "progress":
@@ -5654,8 +5657,7 @@ class TransferApp(tk.Tk):
             components,
             progress_range=(15, 95),
         )
-        self.backup_file_var.set(str(path))
-        self._save_config()
+        self._ui_queue.put(("backup_file", str(path)))
         self._set_status("result", "SUCCESS – Selective backup created")
         self._ui_queue.put(
             (
@@ -5748,8 +5750,7 @@ class TransferApp(tk.Tk):
             components,
             progress_range=(12, 40),
         )
-        self.backup_file_var.set(str(backup))
-        self._save_config()
+        self._ui_queue.put(("backup_file", str(backup)))
         local_backup, temp_copy = self._localize_restore_source(backup)
         try:
             safety = self._restore_selective_backup(
@@ -5857,8 +5858,7 @@ class TransferApp(tk.Tk):
             "source",
             progress_range=(15, 95),
         )
-        self.backup_file_var.set(str(path))
-        self._save_config()
+        self._ui_queue.put(("backup_file", str(path)))
         self._set_status("result", "SUCCESS – Backup created")
         self._ui_queue.put(("message", ("info", APP_TITLE, f"Backup created:\n\n{path}")))
 
@@ -5919,8 +5919,7 @@ class TransferApp(tk.Tk):
             "source",
             progress_range=(12, 40),
         )
-        self.backup_file_var.set(str(backup))
-        self._save_config()
+        self._ui_queue.put(("backup_file", str(backup)))
         local_backup, temp_copy = self._localize_restore_source(backup)
         try:
             safety = self._restore_backup(
