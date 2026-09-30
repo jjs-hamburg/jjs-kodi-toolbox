@@ -18,6 +18,7 @@ import base64
 import copy
 import ctypes
 import datetime as dt
+import fnmatch
 import hashlib
 import io
 import ipaddress
@@ -103,8 +104,11 @@ PROFILE_COMPONENTS = {
     ),
     "addons": ("Add-ons", ("addons",)),
     "addon_data": ("Add-on settings", ("userdata/addon_data",)),
-    "databases": ("Databases", ("userdata/Database",)),
-    "thumbnails": ("Thumbnails / artwork cache", ("userdata/Thumbnails",)),
+    "music_db": ("Music DB (SQLite)", ("userdata/Database/MyMusic*.db",)),
+    "video_db": ("Video DB (SQLite)", ("userdata/Database/MyVideos*.db",)),
+    "textures_db": ("Textures cache DB", ("userdata/Database/Textures*.db",)),
+    "addons_db": ("Add-ons DB", ("userdata/Database/Addons*.db",)),
+    "thumbnails": ("Thumbnail files", ("userdata/Thumbnails",)),
     "keymaps": ("Keymaps", ("userdata/keymaps",)),
     "playlists": ("Playlists", ("userdata/playlists",)),
     "library_nodes": ("Library nodes", ("userdata/library",)),
@@ -381,6 +385,10 @@ class TransferApp(tk.Tk):
         saved_selective = self._cfg.get("selective_components", [])
         if not isinstance(saved_selective, list):
             saved_selective = []
+        if "databases" in saved_selective:
+            saved_selective = [
+                key for key in saved_selective if key != "databases"
+            ] + ["music_db", "video_db", "textures_db", "addons_db"]
         self._selective_component_vars = {
             key: tk.BooleanVar(value=key in saved_selective)
             for key in PROFILE_COMPONENTS
@@ -4074,15 +4082,30 @@ class TransferApp(tk.Tk):
     def _profile_component_summary(self, components: list[str]) -> str:
         return ", ".join(PROFILE_COMPONENTS[key][0] for key in components)
 
+    def _profile_path_matches(self, name: str, pattern: str) -> bool:
+        if any(ch in pattern for ch in "*?["):
+            return fnmatch.fnmatchcase(name, pattern)
+        return name == pattern or name.startswith(pattern + "/")
+
+    def _shell_profile_pattern(self, root: str, pattern: str) -> str:
+        if not any(ch in pattern for ch in "*?["):
+            return shlex.quote(root.rstrip("/") + "/" + pattern)
+        directory, _, basename = pattern.rpartition("/")
+        prefix = root.rstrip("/") + ("/" + directory if directory else "")
+        return shlex.quote(prefix + "/") + basename
+
     def _components_for_existing_paths(
         self,
         components: list[str],
         existing_paths: list[str],
     ) -> list[str]:
-        existing = set(existing_paths)
         available: list[str] = []
         for key in components:
-            if any(path in existing for path in PROFILE_COMPONENTS[key][1]):
+            if any(
+                self._profile_path_matches(path, pattern)
+                for path in existing_paths
+                for pattern in PROFILE_COMPONENTS[key][1]
+            ):
                 available.append(key)
         return available
 
@@ -4131,8 +4154,8 @@ class TransferApp(tk.Tk):
                     for key in components:
                         if key in found:
                             continue
-                        for prefix in PROFILE_COMPONENTS[key][1]:
-                            if name == prefix or name.startswith(prefix + "/"):
+                        for pattern in PROFILE_COMPONENTS[key][1]:
+                            if self._profile_path_matches(name, pattern):
                                 found.add(key)
                                 break
         except Exception as e:
@@ -4144,21 +4167,42 @@ class TransferApp(tk.Tk):
         meta: dict | None,
         target: dict,
         components: list[str],
-    ) -> tuple[bool, str]:
+    ) -> tuple[bool, str, list[str]]:
         full_restore, mode = self._compatibility_mode(meta, target)
         if full_restore:
-            return full_restore, mode
-        if not any(key in components for key in ("addons", "addon_data")):
-            return full_restore, mode
+            return full_restore, mode, components
+
+        effective = list(components)
+        notes: list[str] = []
+        if any(key in components for key in ("addons", "addon_data")):
+            notes.append(
+                "Hardware-dependent source add-ons and their settings will be skipped; "
+                "portable add-ons can still be transferred."
+            )
+        if "addons_db" in components:
+            effective = [key for key in effective if key != "addons_db"]
+            notes.append(
+                "The Add-ons DB is target-specific and will not be transferred. "
+                "Kodi will maintain/rebuild it on the target."
+            )
+
+        if not notes:
+            return full_restore, mode, effective
+
+        if not effective:
+            raise TransferError(
+                "The selected Add-ons DB cannot be transferred across different "
+                "platforms/architectures. No other transferable component is selected."
+            )
+
         if not self._ask_yes_no(
             "Platform / architecture compatibility",
             f"Source and target are not the same platform/architecture.\n\n{mode}\n\n"
-            "The selection contains Add-ons and/or Add-on settings. "
-            "Hardware-dependent source add-ons and their settings will be skipped; "
-            "portable add-ons can still be transferred.\n\nContinue?",
+            + "\n\n".join(notes)
+            + "\n\nContinue with the transferable selected content?",
         ):
             raise TransferError("Operation was cancelled before any target changes were made.")
-        return full_restore, mode
+        return full_restore, mode, effective
 
     def _existing_profile_component_paths(
         self,
@@ -4169,12 +4213,22 @@ class TransferApp(tk.Tk):
         paths = self._profile_component_paths(components)
         commands = []
         root = info["profile_root"].rstrip("/")
+        qroot_prefix = shlex.quote(root.rstrip("/") + "/")
         for path in paths:
-            absolute = root + "/" + path
-            commands.append(
-                f"if [ -e {shlex.quote(absolute)} ]; then "
-                f"printf '%s\\n' {shlex.quote(path)}; fi"
-            )
+            shell_path = self._shell_profile_pattern(root, path)
+            if any(ch in path for ch in "*?["):
+                commands.append(
+                    f"for f in {shell_path}; do "
+                    f"[ -e \"$f\" ] || continue; "
+                    f"printf '%s\\n' \"${{f#{root.rstrip('/')}/}}\"; "
+                    f"done"
+                )
+            else:
+                absolute = root + "/" + path
+                commands.append(
+                    f"if [ -e {shlex.quote(absolute)} ]; then "
+                    f"printf '%s\\n' {shlex.quote(path)}; fi"
+                )
         if not commands:
             return []
         code, out, err = self._target_exec(info, role, "; ".join(commands), timeout=120)
@@ -4346,7 +4400,7 @@ class TransferApp(tk.Tk):
     ) -> None:
         root = info["profile_root"].rstrip("/")
         paths = [
-            shlex.quote(root + "/" + path)
+            self._shell_profile_pattern(root, path)
             for path in self._profile_component_paths(components)
         ]
         if not paths:
@@ -4354,7 +4408,7 @@ class TransferApp(tk.Tk):
         code, _, err = self._target_exec(
             info,
             role,
-            "rm -rf " + " ".join(paths),
+            "rm -rf -- " + " ".join(paths),
             timeout=300,
         )
         if code != 0:
@@ -4372,7 +4426,7 @@ class TransferApp(tk.Tk):
     ) -> None:
         ordinary = [
             key for key in components
-            if key not in {"addons", "addon_data", "databases"}
+            if key not in {"addons", "addon_data", "addons_db"}
         ]
         self._remove_profile_component_paths(info, role, ordinary)
 
@@ -4399,27 +4453,7 @@ class TransferApp(tk.Tk):
                             + (f" Device: {err.strip()}" if err.strip() else "")
                         )
 
-        if "databases" in components:
-            database = root + "/userdata/Database"
-            qdb = shlex.quote(database)
-            command = (
-                f"if [ -d {qdb} ]; then "
-                f"for f in {qdb}/*; do "
-                f"[ -e \"$f\" ] || continue; "
-                f"case \"$(basename \"$f\")\" in "
-                f"Addons*.db) ;; "
-                f"*) rm -rf \"$f\" ;; "
-                f"esac; "
-                f"done; fi"
-            )
-            code, _, err = self._target_exec(info, role, command, timeout=180)
-            if code != 0:
-                raise TransferError(
-                    "Target databases could not be prepared for cross-platform selective restore."
-                    + (f" Device: {err.strip()}" if err.strip() else "")
-                )
-
-    def _build_component_archive(
+        # Add-ons DB is intentionally kept untouched on cross-platform restores.\n\n    def _build_component_archive(
         self,
         backup: Path,
         components: list[str],
@@ -4436,7 +4470,7 @@ class TransferApp(tk.Tk):
                     name = normalize_tar_name(member.name, legacy_wrapped)
                     if not name or name == META_NAME:
                         continue
-                    if not any(name == prefix or name.startswith(prefix + "/") for prefix in prefixes):
+                    if not any(self._profile_path_matches(name, pattern) for pattern in prefixes):
                         continue
                     ti = copy.copy(member)
                     ti.name = name
@@ -4483,7 +4517,7 @@ class TransferApp(tk.Tk):
             available,
             "in the selected backup",
         )
-        full_restore, mode = self._confirm_selective_compatibility(
+        full_restore, mode, components = self._confirm_selective_compatibility(
             meta,
             target,
             components,
@@ -5695,7 +5729,9 @@ class TransferApp(tk.Tk):
                 "arch_family": source["arch_family"],
             },
         }
-        self._confirm_selective_compatibility(source_meta, target, components)
+        _full_restore, _mode, components = self._confirm_selective_compatibility(
+            source_meta, target, components
+        )
 
         summary = self._profile_component_summary(components)
         if not self._ask_yes_no(
