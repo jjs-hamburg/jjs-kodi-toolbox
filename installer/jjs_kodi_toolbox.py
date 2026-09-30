@@ -332,6 +332,9 @@ class TransferApp(tk.Tk):
             "backup_dir": self.backup_dir_var.get().strip(),
             "backup_file": self.backup_file_var.get().strip(),
             "safety_backup": bool(self.safety_backup_var.get()),
+            "selective_components": self._selected_profile_components()
+            if hasattr(self, "_selective_component_vars")
+            else [],
             "screenshot_dir": self.screenshot_dir_var.get().strip(),
             "database_backup_dir": self.database_backup_dir_var.get().strip(),
             "database_restore_file": self.database_restore_file_var.get().strip(),
@@ -375,6 +378,13 @@ class TransferApp(tk.Tk):
         self.backup_dir_var = tk.StringVar(value=str(self._cfg.get("backup_dir", default_backup_dir())))
         self.backup_file_var = tk.StringVar(value=str(self._cfg.get("backup_file", "")))
         self.safety_backup_var = tk.BooleanVar(value=bool(self._cfg.get("safety_backup", True)))
+        saved_selective = self._cfg.get("selective_components", [])
+        if not isinstance(saved_selective, list):
+            saved_selective = []
+        self._selective_component_vars = {
+            key: tk.BooleanVar(value=key in saved_selective)
+            for key in PROFILE_COMPONENTS
+        }
         self.screenshot_dir_var = tk.StringVar(
             value=str(self._cfg.get("screenshot_dir", default_screenshot_dir()))
         )
@@ -436,75 +446,88 @@ class TransferApp(tk.Tk):
         self._build_database_tab(database_tab)
 
     def _build_profile_tab(self, outer) -> None:
-        endpoints = ttk.Frame(outer)
-        endpoints.pack(fill="x")
-        endpoints.columnconfigure(0, weight=1)
-        endpoints.columnconfigure(1, weight=1)
+        self.status_vars: dict[str, tk.StringVar] = {
+            key: tk.StringVar(value="—")
+            for key in ("source", "target", "backup", "restore", "result")
+        }
 
-        self._build_endpoint(endpoints, "source", "Source A", 0)
-        self._build_endpoint(endpoints, "target", "Target B", 1)
+        endpoints_box = ttk.LabelFrame(outer, text="Source / Target", padding=10)
+        endpoints_box.pack(fill="x")
+        endpoints_box.columnconfigure(0, weight=1)
+        endpoints_box.columnconfigure(1, weight=1)
+        self._build_endpoint(endpoints_box, "source", "Source A", 0)
+        self._build_endpoint(endpoints_box, "target", "Target B", 1)
 
-        options = ttk.LabelFrame(outer, text="Backup", padding=10)
-        options.pack(fill="x", pady=(10, 0))
-        options.columnconfigure(1, weight=1)
-
-        self._path_row(options, 0, "ADB folder:", self.adb_dir_var, self._browse_adb_dir)
-        self._path_row(options, 1, "Backup destination:", self.backup_dir_var, self._browse_backup_dir)
-        self._path_row(options, 2, "Backup to restore:", self.backup_file_var, self._browse_backup_file)
+        backup_box = ttk.LabelFrame(outer, text="Backup", padding=10)
+        backup_box.pack(fill="x", pady=(10, 0))
+        backup_box.columnconfigure(1, weight=1)
+        self._path_row(backup_box, 0, "ADB folder:", self.adb_dir_var, self._browse_adb_dir)
+        self._path_row(
+            backup_box, 1, "Backup destination:", self.backup_dir_var, self._browse_backup_dir
+        )
+        self._path_row(
+            backup_box, 2, "Backup to restore:", self.backup_file_var, self._browse_backup_file
+        )
         ttk.Checkbutton(
-            options,
+            backup_box,
             text="Automatically back up the existing target profile before restore",
             variable=self.safety_backup_var,
         ).grid(row=3, column=1, sticky="w", pady=(5, 0))
 
-        actions = ttk.Frame(outer)
-        actions.pack(fill="x", pady=10)
-
+        full_box = ttk.LabelFrame(outer, text="Full Profiles", padding=10)
+        full_box.pack(fill="x", pady=(10, 0))
+        full_actions = ttk.Frame(full_box)
+        full_actions.pack(fill="x")
         for text, fn in (
-            ("Check source", lambda: self._start_worker(lambda: self._check_endpoint("source"), operation_title="Check source")),
-            ("Check target", lambda: self._start_worker(lambda: self._check_endpoint("target"), operation_title="Check target")),
             ("BACKUP", lambda: self._start_worker(self._backup_only, operation_title="Profile backup")),
             ("RESTORE", lambda: self._start_worker(self._restore_only, operation_title="Profile restore")),
             ("TRANSFER A → B", lambda: self._start_worker(self._transfer, operation_title="Profile transfer A → B")),
         ):
-            b = ttk.Button(actions, text=text, command=fn)
+            b = ttk.Button(full_actions, text=text, command=fn)
             b.pack(side="left", padx=(0, 8))
             self._action_buttons.append(b)
 
-        selective_actions = ttk.Frame(outer)
-        selective_actions.pack(fill="x", pady=(0, 10))
-        ttk.Label(selective_actions, text="Selective:").pack(side="left", padx=(0, 8))
+        selective_box = ttk.LabelFrame(outer, text="Selective Profiles", padding=10)
+        selective_box.pack(fill="x", pady=(10, 0))
+        ttk.Label(
+            selective_box,
+            text="The same selection is used for backup, restore, transfer and delete.",
+        ).grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 6))
+
+        for index, (key, (label, _paths)) in enumerate(PROFILE_COMPONENTS.items()):
+            row = 1 + index // 5
+            column = index % 5
+            ttk.Checkbutton(
+                selective_box,
+                text=label,
+                variable=self._selective_component_vars[key],
+                command=self._save_config,
+            ).grid(row=row, column=column, sticky="w", padx=(0, 14), pady=2)
+
+        selective_actions = ttk.Frame(selective_box)
+        selective_actions.grid(row=3, column=0, columnspan=5, sticky="w", pady=(10, 0))
         for text, fn in (
-            ("BACKUP …", lambda: self._start_worker(self._selective_backup_only, operation_title="Selective profile backup")),
-            ("RESTORE …", lambda: self._start_worker(self._selective_restore_only, operation_title="Selective profile restore")),
-            ("TRANSFER A → B …", lambda: self._start_worker(self._selective_transfer, operation_title="Selective profile transfer A → B")),
-            ("DELETE CONTENT …", lambda: self._start_worker(self._delete_profile_content, operation_title="Delete profile content")),
+            ("BACKUP", lambda: self._start_worker(self._selective_backup_only, operation_title="Selective profile backup")),
+            ("RESTORE", lambda: self._start_worker(self._selective_restore_only, operation_title="Selective profile restore")),
+            ("TRANSFER A → B", lambda: self._start_worker(self._selective_transfer, operation_title="Selective profile transfer A → B")),
+            ("DELETE CONTENT", lambda: self._start_worker(self._delete_profile_content, operation_title="Delete profile content")),
         ):
             b = ttk.Button(selective_actions, text=text, command=fn)
             b.pack(side="left", padx=(0, 8))
             self._action_buttons.append(b)
 
-        status = ttk.LabelFrame(outer, text="Status", padding=8)
-        status.pack(fill="x", pady=(0, 10))
-        status.columnconfigure(1, weight=1)
-        self.status_vars: dict[str, tk.StringVar] = {}
-        for row, (key, label) in enumerate(
-            (
-                ("source", "Source"),
-                ("target", "Target"),
-                ("backup", "Backup"),
-                ("restore", "Restore"),
-                ("result", "Result"),
-            )
-        ):
-            ttk.Label(status, text=label + ":").grid(row=row, column=0, sticky="nw", padx=(0, 10), pady=2)
-            var = tk.StringVar(value="—")
-            self.status_vars[key] = var
-            ttk.Label(status, textvariable=var).grid(row=row, column=1, sticky="w", pady=2)
+        result_row = ttk.Frame(selective_box)
+        result_row.grid(row=4, column=0, columnspan=5, sticky="ew", pady=(8, 0))
+        ttk.Label(result_row, text="Result:").pack(side="left")
+        ttk.Label(result_row, textvariable=self.status_vars["result"]).pack(
+            side="left", padx=(8, 0)
+        )
 
         log_box = ttk.LabelFrame(outer, text="Log", padding=6)
-        log_box.pack(fill="both", expand=True)
-        self.log_text = tk.Text(log_box, wrap="word", height=14, font=("Consolas", 9), state="disabled")
+        log_box.pack(fill="both", expand=True, pady=(10, 0))
+        self.log_text = tk.Text(
+            log_box, wrap="word", height=10, font=("Consolas", 9), state="disabled"
+        )
         scroll = ttk.Scrollbar(log_box, orient="vertical", command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=scroll.set)
         self.log_text.pack(side="left", fill="both", expand=True)
@@ -1191,6 +1214,23 @@ class TransferApp(tk.Tk):
         profile_box = ttk.Combobox(frame, textvariable=profile_var)
         profile_box.grid(row=4, column=1, sticky="ew", pady=3)
 
+        check_row = ttk.Frame(frame)
+        check_row.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(7, 0))
+        check_button = ttk.Button(
+            check_row,
+            text="Check source" if role == "source" else "Check target",
+            command=lambda r=role: self._start_worker(
+                lambda: self._check_endpoint(r),
+                operation_title="Check source" if r == "source" else "Check target",
+            ),
+        )
+        check_button.pack(side="left")
+        self._action_buttons.append(check_button)
+        ttk.Label(
+            check_row,
+            textvariable=self.status_vars[role],
+        ).pack(side="left", padx=(10, 0))
+
         self._endpoint_widgets[role] = {
             "user": user_entry,
             "password": pass_entry,
@@ -1793,81 +1833,20 @@ class TransferApp(tk.Tk):
         done.wait()
         return answer["value"]
 
-    def _choose_profile_components(self, title: str) -> list[str] | None:
-        done = threading.Event()
-        answer: dict[str, list[str] | None] = {"value": None}
+    def _selected_profile_components(self) -> list[str]:
+        return [
+            key
+            for key, var in self._selective_component_vars.items()
+            if bool(var.get())
+        ]
 
-        def show() -> None:
-            dialog = tk.Toplevel(self)
-            dialog.title(title)
-            dialog.transient(self)
-            dialog.resizable(False, False)
-
-            body = ttk.Frame(dialog, padding=14)
-            body.pack(fill="both", expand=True)
-            ttk.Label(
-                body,
-                text="Select the Kodi profile content to process:",
-                justify="left",
-            ).pack(anchor="w", pady=(0, 8))
-
-            vars_by_key: dict[str, tk.BooleanVar] = {}
-            for key, (label, _paths) in PROFILE_COMPONENTS.items():
-                var = tk.BooleanVar(value=False)
-                vars_by_key[key] = var
-                ttk.Checkbutton(body, text=label, variable=var).pack(anchor="w", pady=2)
-
-            tools_row = ttk.Frame(body)
-            tools_row.pack(fill="x", pady=(10, 0))
-
-            def set_all(value: bool) -> None:
-                for var in vars_by_key.values():
-                    var.set(value)
-
-            ttk.Button(tools_row, text="Select all", command=lambda: set_all(True)).pack(
-                side="left"
+    def _require_selected_profile_components(self) -> list[str]:
+        components = self._selected_profile_components()
+        if not components:
+            raise TransferError(
+                "Select at least one profile component in Selective Profiles."
             )
-            ttk.Button(tools_row, text="Clear", command=lambda: set_all(False)).pack(
-                side="left", padx=(8, 0)
-            )
-
-            buttons = ttk.Frame(body)
-            buttons.pack(fill="x", pady=(14, 0))
-
-            def finish(ok: bool) -> None:
-                if ok:
-                    selected = [key for key, var in vars_by_key.items() if var.get()]
-                    if not selected:
-                        messagebox.showwarning(
-                            APP_TITLE,
-                            "Select at least one profile component.",
-                            parent=dialog,
-                        )
-                        return
-                    answer["value"] = selected
-                else:
-                    answer["value"] = None
-                try:
-                    dialog.grab_release()
-                except Exception:
-                    pass
-                dialog.destroy()
-                done.set()
-
-            ttk.Button(buttons, text="Cancel", command=lambda: finish(False)).pack(
-                side="right"
-            )
-            ttk.Button(buttons, text="OK", command=lambda: finish(True)).pack(
-                side="right", padx=(0, 8)
-            )
-            dialog.protocol("WM_DELETE_WINDOW", lambda: finish(False))
-            self._center_child_on_main(dialog)
-            dialog.grab_set()
-            dialog.focus_force()
-
-        self.after(0, show)
-        done.wait()
-        return answer["value"]
+        return components
 
     # ---------- subprocess / ADB ----------
     def _run(
