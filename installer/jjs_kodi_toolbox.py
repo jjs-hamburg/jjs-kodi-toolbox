@@ -4432,7 +4432,15 @@ class TransferApp(tk.Tk):
             else:
                 self._stream_ssh_selective_backup(info, role, paths, destination)
             progress(0.88, "Finalizing selective backup")
-            self._append_metadata(destination, info, components)
+            self._append_metadata(
+            destination,
+            info,
+            components,
+            progress_range=(
+                progress_start + (progress_end - progress_start) * 0.88,
+                progress_start + (progress_end - progress_start) * 0.93,
+            ),
+        )
         except Exception:
             try:
                 destination.unlink(missing_ok=True)
@@ -4802,16 +4810,34 @@ class TransferApp(tk.Tk):
         path: Path,
         info: dict,
         components: list[str] | None = None,
+        progress_range: tuple[float, float] | None = None,
     ) -> None:
+        progress_start, progress_end = progress_range or (0.0, 0.0)
+
+        def report(fraction: float, text: str) -> None:
+            self._check_cancelled()
+            if progress_end > progress_start:
+                self._set_progress(
+                    progress_start + (progress_end - progress_start) * fraction,
+                    text,
+                )
+
         try:
+            report(0.0, "Finalizing backup – reading TAR index")
             with tarfile.open(path, "r:") as tf:
                 members = tf.getmembers()
                 if not members:
                     raise TransferError("Backup TAR is empty.")
-                for member in members:
+                total = len(members)
+                for index, member in enumerate(members, start=1):
                     validate_tar_path(member.name)
                     if member.issym() or member.islnk():
                         validate_tar_path(member.linkname)
+                    if index == total or index % 250 == 0:
+                        report(
+                            0.9 * index / total,
+                            f"Finalizing backup – checking {index:,}/{total:,} entries",
+                        )
         except TransferError:
             raise
         except Exception as e:
@@ -4841,8 +4867,10 @@ class TransferApp(tk.Tk):
         ti.size = len(data)
         ti.mtime = int(time.time())
         ti.mode = 0o644
+        report(0.95, "Finalizing backup – writing metadata")
         with tarfile.open(path, "a:") as tf:
             tf.addfile(ti, io.BytesIO(data))
+        report(1.0, "Finalizing backup – metadata written")
 
     def _create_backup(
         self,
@@ -4878,7 +4906,14 @@ class TransferApp(tk.Tk):
             else:
                 self._stream_ssh_backup(info, role, destination)
             progress(0.88, "Finalizing backup")
-            self._append_metadata(destination, info)
+            self._append_metadata(
+                destination,
+                info,
+                progress_range=(
+                    progress_start + (progress_end - progress_start) * 0.88,
+                    progress_start + (progress_end - progress_start) * 0.93,
+                ),
+            )
         except Exception:
             try:
                 if destination.exists():
