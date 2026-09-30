@@ -4074,6 +4074,92 @@ class TransferApp(tk.Tk):
     def _profile_component_summary(self, components: list[str]) -> str:
         return ", ".join(PROFILE_COMPONENTS[key][0] for key in components)
 
+    def _components_for_existing_paths(
+        self,
+        components: list[str],
+        existing_paths: list[str],
+    ) -> list[str]:
+        existing = set(existing_paths)
+        available: list[str] = []
+        for key in components:
+            if any(path in existing for path in PROFILE_COMPONENTS[key][1]):
+                available.append(key)
+        return available
+
+    def _confirm_missing_components(
+        self,
+        selected: list[str],
+        available: list[str],
+        location: str,
+    ) -> list[str]:
+        missing = [key for key in selected if key not in available]
+        effective = [key for key in selected if key in available]
+        if not missing:
+            return effective
+        missing_text = "\n".join(f"• {PROFILE_COMPONENTS[key][0]}" for key in missing)
+        if not effective:
+            raise TransferError(
+                f"None of the selected profile components are available {location}.\n\n"
+                f"Missing:\n{missing_text}"
+            )
+        if not self._ask_yes_no(
+            "Selected profile content is missing",
+            f"The following selected profile components are not available {location}:\n\n"
+            f"{missing_text}\n\n"
+            "Continue with the available selected components?",
+        ):
+            raise TransferError("Operation was cancelled before any target changes were made.")
+        self.log(
+            "Continuing without unavailable selected components: "
+            + self._profile_component_summary(missing)
+        )
+        return effective
+
+    def _backup_available_components(
+        self,
+        backup: Path,
+        components: list[str],
+        legacy_wrapped: bool,
+    ) -> list[str]:
+        found: set[str] = set()
+        try:
+            with tarfile.open(backup, "r:") as tf:
+                for member in tf.getmembers():
+                    name = normalize_tar_name(member.name, legacy_wrapped)
+                    if not name or name == META_NAME:
+                        continue
+                    for key in components:
+                        if key in found:
+                            continue
+                        for prefix in PROFILE_COMPONENTS[key][1]:
+                            if name == prefix or name.startswith(prefix + "/"):
+                                found.add(key)
+                                break
+        except Exception as e:
+            raise TransferError(f"Backup content could not be inspected: {e}") from e
+        return [key for key in components if key in found]
+
+    def _confirm_selective_compatibility(
+        self,
+        meta: dict | None,
+        target: dict,
+        components: list[str],
+    ) -> tuple[bool, str]:
+        full_restore, mode = self._compatibility_mode(meta, target)
+        if full_restore:
+            return full_restore, mode
+        if not any(key in components for key in ("addons", "addon_data")):
+            return full_restore, mode
+        if not self._ask_yes_no(
+            "Platform / architecture compatibility",
+            f"Source and target are not the same platform/architecture.\n\n{mode}\n\n"
+            "The selection contains Add-ons and/or Add-on settings. "
+            "Hardware-dependent source add-ons and their settings will be skipped; "
+            "portable add-ons can still be transferred.\n\nContinue?",
+        ):
+            raise TransferError("Operation was cancelled before any target changes were made.")
+        return full_restore, mode
+
     def _existing_profile_component_paths(
         self,
         info: dict,
@@ -4373,6 +4459,7 @@ class TransferApp(tk.Tk):
         backup: Path,
         target: dict,
         role: str,
+        components: list[str],
         confirm: bool = True,
         display_backup: Path | None = None,
         progress_range: tuple[float, float] | None = None,
@@ -4386,21 +4473,21 @@ class TransferApp(tk.Tk):
         def progress_value(fraction: float) -> float:
             return progress_start + (progress_end - progress_start) * fraction
 
-        progress(0.02, "Reading selective backup")
+        progress(0.02, "Reading backup")
         shown_backup = display_backup or backup
         meta, legacy_wrapped = self._read_backup(backup)
-        if not meta or not meta.get("selective"):
-            raise TransferError(
-                "This is not a selective profile backup. Use the normal RESTORE button for complete profile backups."
-            )
-        raw_components = meta.get("components")
-        if not isinstance(raw_components, list):
-            raise TransferError("Selective backup metadata does not contain a valid component list.")
-        components = [str(key) for key in raw_components if str(key) in PROFILE_COMPONENTS]
-        if not components:
-            raise TransferError("Selective backup does not contain any supported profile components.")
 
-        full_restore, mode = self._compatibility_mode(meta, target)
+        available = self._backup_available_components(backup, components, legacy_wrapped)
+        components = self._confirm_missing_components(
+            components,
+            available,
+            "in the selected backup",
+        )
+        full_restore, mode = self._confirm_selective_compatibility(
+            meta,
+            target,
+            components,
+        )
         self.log(f"Selective restore mode: {mode}.")
         summary = self._profile_component_summary(components)
 
@@ -4436,16 +4523,25 @@ class TransferApp(tk.Tk):
                 time.sleep(1)
 
             progress(0.35, "Preparing selected content")
-            if full_restore and not legacy_wrapped:
-                prepared_archive = backup
-            else:
-                prepared_archive, details = self._build_filtered_restore_archive(
-                    backup,
+            component_archive = self._build_component_archive(
+                backup,
+                components,
+                legacy_wrapped,
+            )
+            if component_archive is None:
+                raise TransferError("The selected backup contains no restorable selected content.")
+            prepared_archive = component_archive
+            prepared_is_temp = True
+
+            if not full_restore:
+                filtered_archive, details = self._build_filtered_restore_archive(
+                    prepared_archive,
                     target,
                     full_restore,
-                    legacy_wrapped,
+                    False,
                 )
-                prepared_is_temp = True
+                prepared_archive.unlink(missing_ok=True)
+                prepared_archive = filtered_archive
 
             if full_restore:
                 self._remove_profile_component_paths(target, role, components)
