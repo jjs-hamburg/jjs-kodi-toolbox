@@ -4414,6 +4414,7 @@ class TransferApp(tk.Tk):
         info: dict,
         paths: list[str],
         destination: Path,
+        activity=None,
     ) -> None:
         adb = self._find_or_install_adb()
         cmd = [
@@ -4439,7 +4440,16 @@ class TransferApp(tk.Tk):
                     creationflags=CREATE_NO_WINDOW,
                 )
                 assert proc.stdout is not None
-                shutil.copyfileobj(proc.stdout, out, length=4 * 1024 * 1024)
+                transferred = 0
+                while True:
+                    self._check_cancelled()
+                    chunk = proc.stdout.read(4 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    transferred += len(chunk)
+                    if activity is not None:
+                        activity(transferred)
                 proc.stdout.close()
                 code = proc.wait()
             except Exception as e:
@@ -4457,6 +4467,7 @@ class TransferApp(tk.Tk):
         role: str,
         paths: list[str],
         destination: Path,
+        activity=None,
     ) -> None:
         client = self._ssh_client(role)
         root = shlex.quote(info["profile_root"])
@@ -4467,11 +4478,16 @@ class TransferApp(tk.Tk):
                 f"tar -cf - -C {root} {selected}"
             )
             with destination.open("wb") as out:
+                transferred = 0
                 while True:
+                    self._check_cancelled()
                     chunk = stdout.read(4 * 1024 * 1024)
                     if not chunk:
                         break
                     out.write(chunk)
+                    transferred += len(chunk)
+                    if activity is not None:
+                        activity(transferred)
             code = stdout.channel.recv_exit_status()
             err = stderr.read().decode("utf-8", errors="replace").strip()
             if code != 0:
@@ -4525,10 +4541,18 @@ class TransferApp(tk.Tk):
                 "Backing up selected Kodi profile content: "
                 + self._profile_component_summary(components)
             )
+            def stream_activity(transferred: int) -> None:
+                mib = transferred / (1024 * 1024)
+                progress(0.20, f"Transferring selected content – {mib:,.1f} MiB received")
+
             if info["platform"] == "android":
-                self._stream_android_selective_backup(info, paths, destination)
+                self._stream_android_selective_backup(
+                    info, paths, destination, activity=stream_activity
+                )
             else:
-                self._stream_ssh_selective_backup(info, role, paths, destination)
+                self._stream_ssh_selective_backup(
+                    info, role, paths, destination, activity=stream_activity
+                )
 
             if not destination.is_file() or destination.stat().st_size <= 0:
                 raise TransferError("Backup TAR is empty.")
@@ -4847,7 +4871,7 @@ class TransferApp(tk.Tk):
             n += 1
         return candidate
 
-    def _stream_android_backup(self, info: dict, destination: Path) -> None:
+    def _stream_android_backup(self, info: dict, destination: Path, activity=None) -> None:
         adb = self._find_or_install_adb()
         cmd = [
             str(adb),
@@ -4871,7 +4895,16 @@ class TransferApp(tk.Tk):
                     creationflags=CREATE_NO_WINDOW,
                 )
                 assert proc.stdout is not None
-                shutil.copyfileobj(proc.stdout, out, length=4 * 1024 * 1024)
+                transferred = 0
+                while True:
+                    self._check_cancelled()
+                    chunk = proc.stdout.read(4 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    transferred += len(chunk)
+                    if activity is not None:
+                        activity(transferred)
                 proc.stdout.close()
                 code = proc.wait()
             except Exception as e:
@@ -4881,18 +4914,29 @@ class TransferApp(tk.Tk):
                 msg = err.read().decode("utf-8", errors="replace").strip()
                 raise TransferError(f"TAR backup over ADB failed: {msg or 'Exit Code ' + str(code)}")
 
-    def _stream_ssh_backup(self, info: dict, role: str, destination: Path) -> None:
+    def _stream_ssh_backup(
+        self,
+        info: dict,
+        role: str,
+        destination: Path,
+        activity=None,
+    ) -> None:
         client = self._ssh_client(role)
         root = shlex.quote(info["profile_root"])
         try:
             self.log(f"$ ssh: tar -cf - -C {root} .")
             _stdin, stdout, stderr = client.exec_command(f"tar -cf - -C {root} .")
             with destination.open("wb") as out:
+                transferred = 0
                 while True:
+                    self._check_cancelled()
                     chunk = stdout.read(4 * 1024 * 1024)
                     if not chunk:
                         break
                     out.write(chunk)
+                    transferred += len(chunk)
+                    if activity is not None:
+                        activity(transferred)
             code = stdout.channel.recv_exit_status()
             err = stderr.read().decode("utf-8", errors="replace").strip()
             if code != 0:
@@ -4936,10 +4980,18 @@ class TransferApp(tk.Tk):
 
             progress(0.20, "Transferring profile")
             self.log(f"Backing up complete Kodi profile directly to: {destination}")
+            def stream_activity(transferred: int) -> None:
+                mib = transferred / (1024 * 1024)
+                progress(0.20, f"Transferring profile – {mib:,.1f} MiB received")
+
             if info["platform"] == "android":
-                self._stream_android_backup(info, destination)
+                self._stream_android_backup(
+                    info, destination, activity=stream_activity
+                )
             else:
-                self._stream_ssh_backup(info, role, destination)
+                self._stream_ssh_backup(
+                    info, role, destination, activity=stream_activity
+                )
 
             if not destination.is_file() or destination.stat().st_size <= 0:
                 raise TransferError("Backup TAR is empty.")
