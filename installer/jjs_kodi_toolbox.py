@@ -59,7 +59,7 @@ except ImportError:
 
 
 APP_TITLE = "JJS KODI Toolbox"
-APP_VERSION = "1.29"
+APP_VERSION = "1.30"
 META_NAME = "JJS_PROFILE_TRANSFER.json"
 
 DEFAULT_ADB_PORT = 5555
@@ -1647,6 +1647,8 @@ class TransferApp(tk.Tk):
             self._operation_dialog_button.configure(
                 text="OK", state="normal", command=self._close_operation_dialog
             )
+        dialog.bind("<Return>", lambda _event: self._close_operation_dialog())
+        dialog.bind("<KP_Enter>", lambda _event: self._close_operation_dialog())
         dialog.protocol("WM_DELETE_WINDOW", self._close_operation_dialog)
         self._center_child_on_main(dialog)
         self._operation_pending_message = None
@@ -1890,6 +1892,18 @@ class TransferApp(tk.Tk):
             listbox.bind(
                 "<Double-Button-1>",
                 lambda _e: finish(
+                    choices[int(listbox.curselection()[0])] if listbox.curselection() else None
+                ),
+            )
+            dialog.bind(
+                "<Return>",
+                lambda _event: finish(
+                    choices[int(listbox.curselection()[0])] if listbox.curselection() else None
+                ),
+            )
+            dialog.bind(
+                "<KP_Enter>",
+                lambda _event: finish(
                     choices[int(listbox.curselection()[0])] if listbox.curselection() else None
                 ),
             )
@@ -2554,23 +2568,7 @@ class TransferApp(tk.Tk):
 
     def _database_start_kodi(self, info: dict) -> None:
         if info["platform"] == "android":
-            cp = self._adb(
-                info["serial"],
-                "shell",
-                "monkey",
-                "-p",
-                info["identifier"],
-                "-c",
-                "android.intent.category.LAUNCHER",
-                "1",
-                timeout=30,
-            )
-            if cp.returncode == 0:
-                self.log(f"Kodi restarted: {info['identifier']}")
-            else:
-                self.log(
-                    f"NOTE: {info['identifier']} could not be relaunched automatically; start Kodi manually."
-                )
+            self.log("Kodi remains stopped after database operation.")
             return
 
         client = self._ssh_client("source")
@@ -2770,7 +2768,10 @@ class TransferApp(tk.Tk):
                         raise TransferError(f"{label} backup failed: {exc}") from exc
             finally:
                 if stopped:
-                    self._database_start_kodi(info)
+                    if info["platform"] == "libreelec":
+                        self._database_start_kodi(info)
+                    else:
+                        self.log("Kodi remains stopped after database backup.")
 
         self._ui_queue.put(("database_restore_file", str(result["path"])))
         self._set_status(
@@ -4077,8 +4078,16 @@ class TransferApp(tk.Tk):
         finally:
             client.close()
 
-    def _start_kodi(self, info: dict, role: str) -> None:
+    def _start_kodi(
+        self,
+        info: dict,
+        role: str,
+        allow_android_initialization: bool = False,
+    ) -> None:
         if info["platform"] == "android":
+            if not allow_android_initialization:
+                self.log("Kodi remains stopped on Android; automatic ADB relaunch is disabled.")
+                return
             self._adb(
                 info["serial"],
                 "shell",
@@ -4116,7 +4125,7 @@ class TransferApp(tk.Tk):
         if info["platform"] == "android":
             if not info["profile_exists"]:
                 self.log("Initializing the target Kodi installation once …")
-                self._start_kodi(info, role)
+                self._start_kodi(info, role, allow_android_initialization=True)
                 time.sleep(3)
                 self._stop_kodi(info, role)
             cp = self._adb(info["serial"], "shell", f"mkdir -p {root}", timeout=30)
@@ -4565,7 +4574,7 @@ class TransferApp(tk.Tk):
                 destination.unlink(missing_ok=True)
             except Exception:
                 pass
-            if was_running and not leave_stopped:
+            if was_running and not leave_stopped and info["platform"] == "libreelec":
                 try:
                     self._start_kodi(info, role)
                 except Exception:
@@ -4575,9 +4584,11 @@ class TransferApp(tk.Tk):
             if metadata_staged:
                 self._remove_staged_backup_metadata(info, role)
 
-        if was_running and not leave_stopped:
+        if was_running and not leave_stopped and info["platform"] == "libreelec":
             progress(0.94, "Starting Kodi")
             self._start_kodi(info, role)
+        elif was_running and info["platform"] == "android":
+            self.log("Kodi remains stopped after selective backup.")
 
         progress(1.0, "Selective backup complete")
         size_mb = destination.stat().st_size / (1024 * 1024)
@@ -5010,7 +5021,7 @@ class TransferApp(tk.Tk):
                     destination.unlink()
             except Exception:
                 pass
-            if was_running and not leave_stopped:
+            if was_running and not leave_stopped and info["platform"] == "libreelec":
                 try:
                     self._start_kodi(info, role)
                 except Exception:
@@ -5020,9 +5031,11 @@ class TransferApp(tk.Tk):
             if metadata_staged:
                 self._remove_staged_backup_metadata(info, role)
 
-        if was_running and not leave_stopped:
+        if was_running and not leave_stopped and info["platform"] == "libreelec":
             progress(0.94, "Starting Kodi")
             self._start_kodi(info, role)
+        elif was_running and info["platform"] == "android":
+            self.log("Kodi remains stopped after backup.")
 
         progress(1.0, "Backup complete")
         size_mb = destination.stat().st_size / (1024 * 1024)
@@ -6029,9 +6042,11 @@ class TransferApp(tk.Tk):
             self._set_progress(65, "Deleting selected content")
             self._remove_profile_component_paths(target, "target", components)
 
-            if was_running:
+            if target["platform"] == "libreelec" and was_running:
                 self._set_progress(90, "Starting Kodi")
                 self._start_kodi(target, "target")
+            elif was_running:
+                self.log("Kodi remains stopped after deleting selected profile content.")
 
             self._set_progress(100, "Delete complete")
             self._set_status("result", "SUCCESS – Selected profile content deleted")
@@ -6044,11 +6059,13 @@ class TransferApp(tk.Tk):
                 msg += f"\n\nSafety backup:\n{safety_path}"
             self._ui_queue.put(("message", ("info", APP_TITLE, msg)))
         except Exception:
-            if was_running:
+            if target["platform"] == "libreelec" and was_running:
                 try:
                     self._start_kodi(target, "target")
                 except Exception:
                     pass
+            elif was_running:
+                self.log("Kodi remains stopped after failed target-content deletion.")
             if safety_path:
                 self.log(f"Safety backup of the target profile is retained: {safety_path}")
             raise
