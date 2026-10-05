@@ -2,13 +2,14 @@
 
 Windows toolbox for managing Kodi on **Android / NVIDIA Shield (ADB)** and **LibreELEC (SSH)**.
 
-Current version: **1.29**
+Current version: **1.30**
 
 ## What it does
 
 - **Backup Kodi profiles**
   - Complete profile backup to a local TAR file
   - Optional automatic safety backup before restore/uninstall
+  - Android / ADB: if Kodi is stopped for an operation, the toolbox leaves it stopped afterwards and never relaunches it automatically
 
 - **Restore and transfer profiles**
   - Restore a backup to another Kodi installation
@@ -51,9 +52,10 @@ Current version: **1.29**
   - Install / Update tab mirrors **Target B**
   - Device type, IP, port, Kodi selection and status stay synchronized
 
-- **Progress display**
+- **Progress display and dialogs**
   - Determinate 0–100% progress instead of an animated activity bar
   - Real byte progress where available; phase progress where the underlying tool exposes no usable percentage
+  - Dialogs with an **OK** button can also be closed with **Return / Enter**
 
 ## Supported systems
 
@@ -71,7 +73,7 @@ Current version: **1.29**
 
 Get the current Windows build from:
 
-**Releases → JJS KODI Toolbox 1.29**
+**Releases → JJS KODI Toolbox 1.30**
 
 Files:
 
