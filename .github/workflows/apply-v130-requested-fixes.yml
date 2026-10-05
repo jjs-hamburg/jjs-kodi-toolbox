@@ -19,16 +19,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Apply requested changes
+      - name: Apply requested source changes
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
 
-          source_path = Path("installer/jjs_kodi_toolbox.py")
-          workflow_path = Path(".github/workflows/build-windows-installer.yml")
-          source = source_path.read_text(encoding="utf-8")
-          workflow = workflow_path.read_text(encoding="utf-8")
+          path = Path("installer/jjs_kodi_toolbox.py")
+          source = path.read_text(encoding="utf-8")
 
           def replace_once(text: str, old: str, new: str, label: str) -> str:
               count = text.count(old)
@@ -36,26 +34,13 @@ jobs:
                   raise SystemExit(f"{label}: expected exactly 1 match, found {count}")
               return text.replace(old, new, 1)
 
-          def replace_in_section(
-              text: str,
-              start_marker: str,
-              end_marker: str,
-              old: str,
-              new: str,
-              label: str,
-          ) -> str:
+          def replace_in_section(text, start_marker, end_marker, old, new, label):
               start = text.index(start_marker)
               end = text.index(end_marker, start)
-              block = text[start:end]
-              block = replace_once(block, old, new, label)
+              block = replace_once(text[start:end], old, new, label)
               return text[:start] + block + text[end:]
 
-          source = replace_once(
-              source,
-              'APP_VERSION = "1.29"',
-              'APP_VERSION = "1.30"',
-              "version",
-          )
+          source = replace_once(source, 'APP_VERSION = "1.29"', 'APP_VERSION = "1.30"', "version")
 
           source = replace_once(
               source,
@@ -102,11 +87,7 @@ jobs:
           block = source[start:end]
           android_start = block.index('        if info["platform"] == "android":')
           libreelec_start = block.index('        client = self._ssh_client("source")', android_start)
-          block = (
-              block[:android_start]
-              + '''        if info["platform"] == "android":\n            self.log("Kodi remains stopped after database operation.")\n            return\n\n'''
-              + block[libreelec_start:]
-          )
+          block = block[:android_start] + '''        if info["platform"] == "android":\n            self.log("Kodi remains stopped after database operation.")\n            return\n\n''' + block[libreelec_start:]
           source = source[:start] + block + source[end:]
 
           source = replace_in_section(
@@ -119,16 +100,8 @@ jobs:
           )
 
           for start_marker, end_marker, label in (
-              (
-                  "    def _create_selective_backup(",
-                  "    def _remove_profile_component_paths(",
-                  "selective backup",
-              ),
-              (
-                  "    def _create_backup(",
-                  "    # ---------- backup parsing / smart restore ----------",
-                  "full backup",
-              ),
+              ("    def _create_selective_backup(", "    def _remove_profile_component_paths(", "selective backup"),
+              ("    def _create_backup(", "    # ---------- backup parsing / smart restore ----------", "full backup"),
           ):
               start = source.index(start_marker)
               end = source.index(end_marker, start)
@@ -145,11 +118,11 @@ jobs:
                   '        if was_running and not leave_stopped and info["platform"] == "libreelec":\n',
                   f"{label} success restart",
               )
-              start_text = "selective backup" if "selective" in label else "backup"
+              text = "selective backup" if "selective" in label else "backup"
               block = replace_once(
                   block,
                   "            self._start_kodi(info, role)\n\n        progress(1.0,",
-                  f'''            self._start_kodi(info, role)\n        elif was_running and info["platform"] == "android":\n            self.log("Kodi remains stopped after {start_text}.")\n\n        progress(1.0,''',
+                  f'''            self._start_kodi(info, role)\n        elif was_running and info["platform"] == "android":\n            self.log("Kodi remains stopped after {text}.")\n\n        progress(1.0,''',
                   f"{label} Android stopped log",
               )
               source = source[:start] + block + source[end:]
@@ -171,39 +144,7 @@ jobs:
               "delete failure restart policy",
           )
 
-          source_path.write_text(source, encoding="utf-8")
-
-          if workflow.count("1.29") < 3:
-              raise SystemExit("build workflow: expected current 1.29 references")
-          workflow = workflow.replace("1.29", "1.30")
-          lines = workflow.splitlines()
-          notes_replaced = False
-          for index, line in enumerate(lines):
-              if line.strip().startswith('$notes = '):
-                  indent = line[: len(line) - len(line.lstrip())]
-                  lines[index] = (
-                      indent
-                      + '$notes = "Keeps Kodi stopped after every Android/ADB operation, including profile and database backups and target-content deletion. LibreELEC retains its existing restart behavior. Dialogs with an OK button can now also be closed with Return/Enter."'
-                  )
-                  notes_replaced = True
-                  break
-          if not notes_replaced:
-              raise SystemExit("build workflow: release notes line not found")
-          workflow = "\n".join(lines) + "\n"
-
-          test_marker = "Android no-restart policy OK"
-          if test_marker in workflow:
-              raise SystemExit("build workflow: v1.30 regression checks already present")
-          build_marker = "\n      - name: Build single EXE\n"
-          if workflow.count(build_marker) != 1:
-              raise SystemExit("build workflow: Build single EXE marker not unique")
-          extra_checks = r'''
-          python -c "from installer.jjs_kodi_toolbox import TransferApp; a=object.__new__(TransferApp); calls=[]; a.log=lambda _m: None; a._adb=lambda *args, **kwargs: calls.append((args, kwargs)); info={'platform':'android','serial':'test','identifier':'org.jjs.kodi'}; a._start_kodi(info,'source'); assert not calls; a._start_kodi(info,'source',allow_android_initialization=True); assert calls; calls.clear(); a._database_start_kodi(info); assert not calls; print('Android no-restart policy OK')"
-          python -c "from pathlib import Path; s=Path('installer/jjs_kodi_toolbox.py').read_text(encoding='utf-8'); a=s[s.index('    def _finish_operation_dialog'):s.index('    def _close_operation_dialog')]; b=s[s.index('    def _choose_from_list'):s.index('    def _selected_profile_components')]; assert '<Return>' in a and '<KP_Enter>' in a; assert '<Return>' in b and '<KP_Enter>' in b; print('Return/Enter closes OK dialogs')"
-          python -c "from pathlib import Path; s=Path('installer/jjs_kodi_toolbox.py').read_text(encoding='utf-8'); a=s[s.index('    def _database_backup'):s.index('    def _database_restore')]; assert 'Kodi remains stopped after database backup.' in a; b=s[s.index('    def _delete_profile_content'):s.index('    def _backup_only')]; assert 'target[\"platform\"] == \"libreelec\" and was_running' in b; print('Android completion restart callers guarded')"
-          '''
-          workflow = workflow.replace(build_marker, "\n" + extra_checks + build_marker, 1)
-          workflow_path.write_text(workflow, encoding="utf-8")
+          path.write_text(source, encoding="utf-8")
           PY
 
       - name: Validate patched source
@@ -231,13 +172,12 @@ jobs:
           print("Requested fixes validated")
           PY
 
-      - name: Commit clean result
+      - name: Commit source change
         shell: bash
         run: |
-          git rm .github/workflows/apply-v130-requested-fixes.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add installer/jjs_kodi_toolbox.py .github/workflows/build-windows-installer.yml
+          git add installer/jjs_kodi_toolbox.py
           git diff --cached --check
           git commit -m "Release 1.30: keep Android stopped and support Return on OK"
           git push origin HEAD:main
