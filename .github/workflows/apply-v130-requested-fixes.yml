@@ -201,7 +201,7 @@ jobs:
           python -c "from installer.jjs_kodi_toolbox import TransferApp; a=object.__new__(TransferApp); calls=[]; a.log=lambda _m: None; a._adb=lambda *args, **kwargs: calls.append((args, kwargs)); info={'platform':'android','serial':'test','identifier':'org.jjs.kodi'}; a._start_kodi(info,'source'); assert not calls; a._start_kodi(info,'source',allow_android_initialization=True); assert calls; calls.clear(); a._database_start_kodi(info); assert not calls; print('Android no-restart policy OK')"
           python -c "from pathlib import Path; s=Path('installer/jjs_kodi_toolbox.py').read_text(encoding='utf-8'); a=s[s.index('    def _finish_operation_dialog'):s.index('    def _close_operation_dialog')]; b=s[s.index('    def _choose_from_list'):s.index('    def _selected_profile_components')]; assert '<Return>' in a and '<KP_Enter>' in a; assert '<Return>' in b and '<KP_Enter>' in b; print('Return/Enter closes OK dialogs')"
           python -c "from pathlib import Path; s=Path('installer/jjs_kodi_toolbox.py').read_text(encoding='utf-8'); a=s[s.index('    def _database_backup'):s.index('    def _database_restore')]; assert 'Kodi remains stopped after database backup.' in a; b=s[s.index('    def _delete_profile_content'):s.index('    def _backup_only')]; assert 'target[\"platform\"] == \"libreelec\" and was_running' in b; print('Android completion restart callers guarded')"
-'''
+          '''
           workflow = workflow.replace(build_marker, "\n" + extra_checks + build_marker, 1)
           workflow_path.write_text(workflow, encoding="utf-8")
           PY
